@@ -1,11 +1,10 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { motion } from "framer-motion";
 import { Container } from "@/components/primitives/Container";
 import { DemoUrlInput } from "./demo/DemoUrlInput";
-import { DemoExperience } from "./demo/DemoExperience";
-import { useDemoData } from "@/hooks/useDemoData";
+import { StorefrontViewer } from "@/components/storefront/StorefrontViewer";
 import { fadeUp, staggerContainer } from "@/lib/motion";
 
 // store URL -> path slug (its domain), e.g. "https://www.gullylabs.com/x" -> "gullylabs.com"
@@ -14,9 +13,9 @@ function slugFor(url: string) {
 }
 
 export function Hero() {
-  const { status, store, submittedUrl, generate, reset } = useDemoData();
   const [url, setUrl] = useState("");
-  const [open, setOpen] = useState(false);
+  // the store currently open in the full-screen copy (null = closed)
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [shake, setShake] = useState(0);
 
   // the "Product Tour" nav link fires this to nudge the store-URL input
@@ -27,35 +26,33 @@ export function Hero() {
     return () => window.removeEventListener("demo:shake", onShake);
   }, []);
 
-  // shareable deep link: /product-demo/gullylabs.com auto-opens that store's demo
+  // shareable deep link: /product-demo/gullylabs.com auto-opens that store
   // (also supports the legacy ?store= query param)
   useEffect(() => {
     const m = window.location.pathname.match(/^\/product-demo\/(.+)$/);
     const shared = m ? decodeURIComponent(m[1]) : new URLSearchParams(window.location.search).get("store");
     if (shared) {
+      /* eslint-disable react-hooks/set-state-in-effect -- read once from the URL on mount */
       setUrl(shared);
-      setOpen(true);
-      generate(shared);
+      setPreviewUrl(shared);
+      /* eslint-enable react-hooks/set-state-in-effect */
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const onSubmit = async (e: React.FormEvent) => {
+  const onSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     const v = url.trim();
-    if (!v || status === "loading") return;
-    setOpen(true);
+    if (!v) return;
     // reflect the store in the address bar so it can be copied/shared directly
     window.history.replaceState(null, "", `/product-demo/${slugFor(v)}`);
-    await generate(v);
+    setPreviewUrl(v);
   };
 
-  const close = () => {
-    setOpen(false);
-    reset();
+  const close = useCallback(() => {
+    setPreviewUrl(null);
     setUrl("");
     window.history.replaceState(null, "", "/");
-  };
+  }, []);
 
   return (
     <section
@@ -92,7 +89,7 @@ export function Hero() {
               url={url}
               setUrl={setUrl}
               onSubmit={onSubmit}
-              loading={status === "loading"}
+              loading={false}
               align="center"
               shake={shake}
             />
@@ -100,8 +97,8 @@ export function Hero() {
         </motion.div>
       </Container>
 
-      {/* full-screen brand preview experience */}
-      <DemoExperience open={open} status={status} store={store} submittedUrl={submittedUrl} onClose={close} />
+      {/* full-screen copy of the store's own website */}
+      <StorefrontViewer url={previewUrl} onClose={close} />
     </section>
   );
 }
