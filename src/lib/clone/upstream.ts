@@ -22,6 +22,8 @@ export type Upstream = {
   /** URL after redirects — becomes the page's <base href>. */
   finalUrl: string;
   setCookies: string[];
+  /** "jina" = a rendered snapshot from a headless browser, not the store's raw HTML */
+  via: "fetch" | "curl" | "jina";
 };
 
 /** Reject obviously-internal / non-public hosts (basic SSRF guard). */
@@ -42,7 +44,7 @@ export function isBlockedHost(host: string) {
 }
 
 function isChallenge(text: string): boolean {
-  return /Just a moment|challenge-platform|cf-browser-verification|Attention Required/i.test(text.slice(0, 2500));
+  return /Just a moment|challenge-platform|cf-browser-verification|Attention Required|Vercel Security Checkpoint/i.test(text.slice(0, 2500));
 }
 
 const isHtml = (ct: string) => /text\/html/i.test(ct);
@@ -78,6 +80,7 @@ async function nodeFetch(
       body: buf,
       finalUrl: res.url || url,
       setCookies: res.headers.getSetCookie?.() ?? [],
+      via: "fetch",
     };
   } catch {
     return null;
@@ -92,6 +95,7 @@ async function curlFetch(url: string, accept: string, cookie?: string): Promise<
   try {
     const args = [
       "-sL", "--compressed",
+      "--dump-header", "-", // response headers ahead of the body, for Set-Cookie
       "--max-redirs", "6",
       "--max-time", String(Math.ceil(FETCH_TIMEOUT / 1000)),
       "-A", UA,
@@ -110,9 +114,20 @@ async function curlFetch(url: string, accept: string, cookie?: string): Promise<
     const at = text.lastIndexOf(CURL_MARK);
     if (at < 0) return null;
     const [code, contentType, finalUrl] = text.slice(at + CURL_MARK.length, -3).split("|");
-    const body = text.slice(0, at);
+    // peel off one header block per hop (redirects included), keeping their cookies
+    let body = text.slice(0, at);
+    const setCookies: string[] = [];
+    while (body.startsWith("HTTP/")) {
+      const end = body.indexOf("\r\n\r\n");
+      if (end < 0) break;
+      for (const line of body.slice(0, end).split("\r\n")) {
+        const m = line.match(/^set-cookie:\s*(.+)$/i);
+        if (m) setCookies.push(m[1]);
+      }
+      body = body.slice(end + 4);
+    }
     if (!body || isChallenge(body)) return null;
-    return { status: Number(code) || 200, contentType, body: Buffer.from(body, "utf8"), finalUrl: finalUrl || url, setCookies: [] };
+    return { status: Number(code) || 200, contentType, body: Buffer.from(body, "utf8"), finalUrl: finalUrl || url, setCookies, via: "curl" };
   } catch {
     return null;
   }
@@ -129,7 +144,7 @@ async function jinaHtml(url: string): Promise<Upstream | null> {
     if (!res.ok) return null;
     const text = await res.text();
     if (!text || isChallenge(text)) return null;
-    return { status: 200, contentType: "text/html; charset=utf-8", body: Buffer.from(text, "utf8"), finalUrl: url, setCookies: [] };
+    return { status: 200, contentType: "text/html; charset=utf-8", body: Buffer.from(text, "utf8"), finalUrl: url, setCookies: [], via: "jina" };
   } catch {
     return null;
   } finally {
@@ -137,12 +152,37 @@ async function jinaHtml(url: string): Promise<Upstream | null> {
   }
 }
 
+// Stores whose WAF turns away Node's fetch but lets curl through: remembered per
+// host for a while, so their requests go straight to curl instead of paying for
+// a failed attempt every time.
+const curlFirst = new Map<string, number>();
+const CURL_FIRST_TTL = 10 * 60 * 1000;
+
 /** GET a store URL, falling back through curl and (for pages) Jina when blocked. */
 export async function getUpstream(url: string, opts: { accept: string; cookie?: string; page: boolean }): Promise<Upstream | null> {
-  const direct = await nodeFetch(url, { method: "GET", accept: opts.accept, cookie: opts.cookie });
-  if (direct && direct.status < 400) return direct;
-  const viaCurl = await curlFetch(url, opts.accept, opts.cookie);
-  if (viaCurl && viaCurl.status < 400) return viaCurl;
+  // A store's own "not found" is an answer, not a block — falling through to Jina
+  // would dress its rendered 404 page up as a 200.
+  const answered = (u: Upstream | null) => !!u && (u.status < 400 || u.status === 404 || u.status === 410);
+  const host = new URL(url).hostname;
+  const since = curlFirst.get(host);
+  const preferCurl = since !== undefined && Date.now() - since < CURL_FIRST_TTL;
+
+  let direct: Upstream | null = null;
+  let viaCurl: Upstream | null = null;
+  if (preferCurl) {
+    viaCurl = await curlFetch(url, opts.accept, opts.cookie);
+    if (answered(viaCurl)) return viaCurl;
+    direct = await nodeFetch(url, { method: "GET", accept: opts.accept, cookie: opts.cookie });
+    if (answered(direct)) return direct;
+  } else {
+    direct = await nodeFetch(url, { method: "GET", accept: opts.accept, cookie: opts.cookie });
+    if (answered(direct)) return direct;
+    viaCurl = await curlFetch(url, opts.accept, opts.cookie);
+    if (answered(viaCurl)) {
+      curlFirst.set(host, Date.now());
+      return viaCurl;
+    }
+  }
   // Jina can't carry the password cookie, and only pages are worth its latency.
   if (opts.page && !opts.cookie) {
     const viaJina = await jinaHtml(url);

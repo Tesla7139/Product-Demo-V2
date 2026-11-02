@@ -22,6 +22,52 @@
   var CHECKOUT_URL = ORIGIN + "/preview/checkout";
   var nativeFetch = window.fetch.bind(window);
 
+  // Background scripts (analytics, ad pixels, Shopify's web-pixel sandboxes, the
+  // express-checkout bundle) that the page adds while it runs: dropped before
+  // they load. The pattern comes from the route (src/lib/clone/blocklist.ts),
+  // which strips the same ones from the HTML itself.
+  var BLOCK_SRC = null;
+  try { BLOCK_SRC = CFG.blockSrc ? new RegExp(CFG.blockSrc, "i") : null; } catch { BLOCK_SRC = null; }
+  function isBackground(node) {
+    if (!BLOCK_SRC || !node || node.nodeType !== 1) return false;
+    var tag = node.tagName;
+    if (tag === "SCRIPT" || tag === "IFRAME") return BLOCK_SRC.test(node.getAttribute("src") || node.src || "");
+    if (tag === "LINK") return /preload|prefetch/i.test(node.rel) && BLOCK_SRC.test(node.href || "");
+    return false;
+  }
+  if (BLOCK_SRC) {
+    ["appendChild", "insertBefore"].forEach(function (name) {
+      var orig = Node.prototype[name];
+      Node.prototype[name] = function (node) {
+        return isBackground(node) ? node : orig.apply(this, arguments);
+      };
+    });
+    ["append", "prepend"].forEach(function (name) {
+      var orig = Element.prototype[name];
+      Element.prototype[name] = function () {
+        var keep = Array.prototype.filter.call(arguments, function (n) { return !isBackground(n); });
+        return orig.apply(this, keep);
+      };
+    });
+  }
+
+  // SMS sign-up tools (Attentive, Postscript) put a full-screen transparent iframe
+  // over the page. Their creatives refuse to render off the store's own domain, so
+  // in the copy that iframe stays blank yet swallows every click — hide it.
+  var blockers = document.createElement("style");
+  blockers.textContent =
+    '#attentive_overlay,#attentive_creative,iframe[src*="attn.tv"],iframe[src*="attentivemobile.com"],' +
+    'iframe[src*="postscript.io"],iframe[id^="postscript"]{display:none!important;pointer-events:none!important}' +
+    // add-to-cart feedback on the store's own button and cart icon (see buttonState / flyToCart)
+    "@keyframes cp-spin{to{transform:rotate(360deg)}}" +
+    "@keyframes cp-pop{0%{transform:scale(.4);opacity:0}70%{transform:scale(1.2)}100%{transform:scale(1);opacity:1}}" +
+    "@keyframes cp-bump{0%{transform:scale(1)}35%{transform:scale(1.28)}65%{transform:scale(.92)}100%{transform:scale(1)}}" +
+    ".cp-btn-spin{display:inline-block;width:1em;height:1em;border:2px solid currentColor;border-right-color:transparent;border-radius:50%;animation:cp-spin .7s linear infinite;vertical-align:-.15em;margin-right:.55em}" +
+    ".cp-btn-tick{display:inline-block;margin-right:.45em;animation:cp-pop .4s ease both}" +
+    ".cp-bump{animation:cp-bump .5s ease}" +
+    "@media (prefers-reduced-motion:reduce){.cp-btn-spin,.cp-btn-tick,.cp-bump{animation:none}}";
+  document.documentElement.appendChild(blockers);
+
   /* ------------------------------ helpers ------------------------------ */
   function read(k) {
     try { return JSON.parse(sessionStorage.getItem(k) || "null"); } catch { return null; }
@@ -325,6 +371,19 @@
     ".checkout:hover{filter:brightness(1.1)}",
     ".cont{font-size:14px;text-decoration:underline;color:#444;padding:6px}",
     ".err{margin:12px 0 0;color:#c62828;font-size:14px}",
+    // motion: the banner + the line just added slide in; checkout hands off through a fade
+    "@keyframes cp-in{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}",
+    "@keyframes cp-glow{from{background:#f4f8f5}to{background:transparent}}",
+    "@keyframes cp-spin{to{transform:rotate(360deg)}}",
+    ".added{animation:cp-in .35s ease both}",
+    "li.new{animation:cp-in .45s .08s cubic-bezier(.2,.8,.2,1) both,cp-glow 1.6s .5s ease both;border-radius:8px}",
+    ".spin{display:inline-block;width:16px;height:16px;border:2px solid currentColor;border-right-color:transparent;border-radius:50%;animation:cp-spin .7s linear infinite;vertical-align:-3px;margin-right:10px}",
+    ".checkout[disabled]{cursor:default;filter:none;opacity:.92}",
+    ".leave{position:fixed;inset:0;background:#fff;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;opacity:0;transition:opacity .35s ease;pointer-events:auto;color:#333;font-size:15px}",
+    ".leave.on{opacity:1}",
+    ".leave .ring{width:34px;height:34px;border:3px solid #e6e6e6;border-top-color:var(--cp-accent,#121212);border-radius:50%;animation:cp-spin .8s linear infinite}",
+    ".leave .lock{display:flex;align-items:center;gap:6px;font-size:13px;color:#777}",
+    "@media (prefers-reduced-motion:reduce){*{animation-duration:0s!important;transition-duration:0s!important}}",
   ].join("");
 
   var shadow = null, host = null;
@@ -353,7 +412,8 @@
       host.style.setProperty("--cp-on-accent", onAccent(b.accent));
     }
     var lines = c.items.map(function (i, idx) {
-      return "<li>" + (i.image ? "<img src='" + esc(i.image) + "' alt=''>" : "<div class='ph'></div>") +
+      var isNew = added && String(added.id) === String(i.id);
+      return "<li" + (isNew ? " class='new'" : "") + ">" + (i.image ? "<img src='" + esc(i.image) + "' alt=''>" : "<div class='ph'></div>") +
         "<div class='info'><div class='t'>" + esc(i.title) + "</div>" +
         (i.variant ? "<div class='v'>" + esc(i.variant) + "</div>" : "") +
         "<div class='p'>" + money(i.price) + "</div>" +
@@ -388,7 +448,11 @@
     if (!btn) return;
     var act = btn.getAttribute("data-act"), c = getCart(), i = Number(btn.getAttribute("data-i"));
     if (act === "close") return closeDrawer();
-    if (act === "checkout") return goCheckout();
+    if (act === "checkout") {
+      btn.disabled = true;
+      btn.innerHTML = "<span class='spin'></span>Redirecting to checkout…";
+      return window.setTimeout(goCheckout, 650);
+    }
     if (act === "inc") c.items[i].qty += 1;
     if (act === "dec") c.items[i].qty = Math.max(1, c.items[i].qty - 1);
     if (act === "rm") c.items.splice(i, 1);
@@ -412,18 +476,95 @@
   }
 
   /* ------------------------------ actions ------------------------------ */
-  function busy(el, on) {
-    if (el && el.style) { el.style.opacity = on ? "0.6" : ""; el.style.pointerEvents = on ? "none" : ""; }
+  // The store's own Add to cart button narrates the add: "Adding…" with a
+  // spinner, then "Added", then back to its original label.
+  function buttonState(el, state) {
+    var btn = el && el.closest && el.closest('button, input[type="submit"], [role="button"], a');
+    if (!btn) return;
+    var isInput = btn.tagName === "INPUT";
+    if (btn.__cpOriginal === undefined) btn.__cpOriginal = isInput ? btn.value : btn.innerHTML;
+    window.clearTimeout(btn.__cpRestore);
+    if (state === "adding") {
+      var r = btn.getBoundingClientRect();
+      btn.style.minWidth = r.width + "px"; // label changes shouldn't resize the button
+      btn.style.minHeight = r.height + "px";
+      btn.style.pointerEvents = "none";
+      if (isInput) btn.value = "Adding…";
+      else btn.innerHTML = "<span class='cp-btn-spin'></span>Adding…";
+      return;
+    }
+    if (state === "added") {
+      if (isInput) btn.value = "✓ Added to cart";
+      else btn.innerHTML = "<span class='cp-btn-tick'>✓</span>Added to cart";
+    }
+    btn.__cpRestore = window.setTimeout(function () {
+      if (isInput) btn.value = btn.__cpOriginal; else btn.innerHTML = btn.__cpOriginal;
+      btn.__cpOriginal = undefined;
+      btn.style.minWidth = btn.style.minHeight = btn.style.pointerEvents = "";
+    }, state === "added" ? 1500 : 0);
   }
+
+  // The header cart icon the product flies into.
+  function cartIcon() {
+    var els = document.querySelectorAll(CART_TOGGLE + ', a[href$="/cart"], a[href*="/cart?"], a[href*="/cart#"]');
+    for (var i = 0; i < els.length; i++) {
+      var r = els[i].getBoundingClientRect();
+      if (r.width && r.height && r.top >= 0 && r.top < 260) return els[i];
+    }
+    return null;
+  }
+
+  // A thumbnail of the product arcs from the button into the cart icon, which
+  // then bounces. Resolves when it lands (at once when there's nowhere to fly).
+  function flyToCart(item, fromEl) {
+    var target = cartIcon();
+    var from = fromEl && fromEl.getBoundingClientRect && fromEl.getBoundingClientRect();
+    if (!target || !from || !from.width || !item.image || !document.body.animate ||
+        matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      return Promise.resolve(target);
+    }
+    var to = target.getBoundingClientRect();
+    var size = 72;
+    var x0 = from.left + from.width / 2 - size / 2, y0 = from.top + from.height / 2 - size / 2;
+    var dx = to.left + to.width / 2 - size / 2 - x0, dy = to.top + to.height / 2 - size / 2 - y0;
+    var img = document.createElement("img");
+    img.src = item.image;
+    img.alt = "";
+    img.style.cssText = "position:fixed;left:" + x0 + "px;top:" + y0 + "px;width:" + size + "px;height:" + size +
+      "px;object-fit:cover;border-radius:14px;box-shadow:0 12px 30px rgba(0,0,0,.25);z-index:2147483646;pointer-events:none;background:#fff";
+    document.documentElement.appendChild(img);
+    var anim = img.animate([
+      { transform: "translate(0,0) scale(.6)", opacity: 0 },
+      { transform: "translate(0,-24px) scale(1)", opacity: 1, offset: 0.18 },
+      { transform: "translate(" + dx * 0.55 + "px," + (dy * 0.55 - 140) + "px) scale(.75)", opacity: 1, offset: 0.6 },
+      { transform: "translate(" + dx + "px," + dy + "px) scale(.18)", opacity: 0.4 },
+    ], { duration: 850, easing: "cubic-bezier(.45,0,.25,1)" });
+    return new Promise(function (resolve) {
+      anim.onfinish = function () {
+        img.remove();
+        target.classList.remove("cp-bump");
+        void target.offsetWidth; // restart the bounce on repeat adds
+        target.classList.add("cp-bump");
+        resolve(target);
+      };
+    });
+  }
+
   async function addProduct(variantId, qty, el, opts) {
     captureBrand(el);
-    busy(el, true);
-    if (!(opts && opts.checkout)) openDrawer(null, true);
+    buttonState(el, "adding");
     var item;
-    try { item = await resolveProduct(variantId, qty, el); } finally { busy(el, false); }
+    try {
+      item = await resolveProduct(variantId, qty, el);
+    } catch (err) {
+      buttonState(el, "reset");
+      throw err;
+    }
     addItems([item]);
+    buttonState(el, "added");
     if (opts && opts.checkout) return goCheckout();
-    openDrawer(item);
+    await flyToCart(item, el);
+    window.setTimeout(function () { openDrawer(item); }, 120);
     return item;
   }
   function addFromForm(form, el, opts) {
@@ -433,9 +574,21 @@
     var qty = parseInt((fd && (fd.get("quantity") || fd.get("items[0][quantity]"))) || "1", 10) || 1;
     return addProduct(id, qty, el || form, opts);
   }
+  // Fade the store out behind a "secure checkout" hand-off, then go.
   function goCheckout() {
     captureBrand();
-    location.href = CHECKOUT_URL;
+    var s = ui();
+    var leave = s.querySelector(".leave");
+    if (!leave) {
+      leave = document.createElement("div");
+      leave.className = "leave";
+      leave.innerHTML = "<div class='ring'></div><div>Redirecting to secure checkout…</div>" +
+        "<div class='lock'><svg width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2'><rect x='5' y='11' width='14' height='10' rx='2'/><path d='M8 11V7a4 4 0 0 1 8 0v4'/></svg>Secure and encrypted</div>";
+      s.appendChild(leave);
+    }
+    host.style.pointerEvents = "auto";
+    requestAnimationFrame(function () { leave.classList.add("on"); });
+    window.setTimeout(function () { location.href = CHECKOUT_URL; }, 700);
   }
 
   /* ------------------------- cart API (fetch / XHR) ------------------------- */
@@ -476,7 +629,7 @@
       }
       addItems(added);
       captureBrand(lastPressed);
-      openDrawer(added[0]);
+      flyToCart(added[0], lastPressed).then(function () { openDrawer(added[0]); });
       var out = added.map(shopifyItem);
       return body.items ? { items: out } : out[0];
     }
@@ -667,6 +820,55 @@
     run();
   }, true);
 
+  /* --------------------------- snapshot pages --------------------------- */
+  // Pages served from a rendered snapshot run without the store's scripts (see
+  // stripScripts in the route), so pop-ups baked into the snapshot can't close
+  // themselves and lazy images never get their source. Stand in for both.
+  var DISMISS = /^(×|✕|✖|x|close|dismiss|no,? thanks?|no thank you|maybe later|not now|i agree|agree|accept( all)?( cookies)?|allow( all)?( cookies)?|i decline|decline( all)?|reject( all)?|got it|ok(ay)?)$/i;
+  function overlayOf(el) {
+    var outer = null;
+    for (var n = el; n && n !== document.body && n !== document.documentElement; n = n.parentElement) {
+      var pos = getComputedStyle(n).position;
+      if (pos === "fixed" || n.tagName === "DIALOG" || n.getAttribute("aria-modal") === "true") outer = n;
+    }
+    return outer || el.closest('[class*="announcement" i], [class*="teaser" i], [class*="popup" i], [role="alert"]');
+  }
+  function hideOverlay(box) {
+    box.style.setProperty("display", "none", "important");
+    // full-screen backdrops that sit beside the dialog go with it
+    if (box.parentElement) {
+      Array.prototype.forEach.call(box.parentElement.children, function (sib) {
+        var r = sib.getBoundingClientRect();
+        if (sib !== box && getComputedStyle(sib).position === "fixed" && r.width >= innerWidth * 0.9 && r.height >= innerHeight * 0.9) {
+          sib.style.setProperty("display", "none", "important");
+        }
+      });
+    }
+  }
+  function fillLazyImages() {
+    document.querySelectorAll("img[data-src], img[data-srcset], source[data-srcset]").forEach(function (el) {
+      if (el.getAttribute("data-srcset")) el.setAttribute("srcset", el.getAttribute("data-srcset"));
+      if (el.getAttribute("data-src") && (!el.getAttribute("src") || /^data:|placeholder|blank|spacer/i.test(el.getAttribute("src")))) {
+        el.setAttribute("src", el.getAttribute("data-src"));
+      }
+    });
+  }
+  if (CFG.snapshot) {
+    window.addEventListener("click", function (e) {
+      var t = e.target instanceof Element ? e.target : null;
+      var btn = t && t.closest('button, a, [role="button"], [aria-label]');
+      if (!btn || btn === host) return;
+      var text = (btn.innerText || btn.getAttribute("aria-label") || "").replace(/\s+/g, " ").trim();
+      var aria = btn.getAttribute("aria-label") || "";
+      if (!DISMISS.test(text) && !/close|dismiss/i.test(aria)) return;
+      var box = overlayOf(btn);
+      if (!box) return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      hideOverlay(box);
+    }, true);
+  }
+
   window.addEventListener("submit", function (e) {
     var form = e.target;
     if (!(form instanceof HTMLFormElement)) return;
@@ -695,7 +897,26 @@
   }, true);
 
   /* ------------------------------ page ready ------------------------------ */
+  // The viewer opens stores on a product page. When it couldn't find one from the
+  // catalog (headless storefronts), it asks us to follow the first product link here.
+  function openFirstProduct() {
+    var want = false;
+    try {
+      want = sessionStorage.getItem("cp-open-product") === "1";
+      sessionStorage.removeItem("cp-open-product");
+    } catch { /* storage blocked — stay on this page */ }
+    if (!want) return false;
+    var links = document.querySelectorAll('a[href*="/products/"]');
+    for (var i = 0; i < links.length; i++) {
+      var u = abs(links[i].getAttribute("href"));
+      if (u && isStore(u)) { location.href = proxied(u); return true; }
+    }
+    return false;
+  }
+
   function ready() {
+    if (CFG.snapshot) fillLazyImages();
+    if (openFirstProduct()) return; // the product page reports ready instead
     var brand = captureBrand();
     updateBadges(getCart());
     // warm the product lookup so Add to cart responds instantly

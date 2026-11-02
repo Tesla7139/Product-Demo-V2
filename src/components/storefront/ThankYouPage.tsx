@@ -1,11 +1,11 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { Check, ChevronDown, CreditCard, Loader2, MapPin, Pencil, Plus, Trash2, UserRound, X } from "lucide-react";
+import { ChevronDown, CreditCard, Loader2, MapPin, Pencil, Plus, Trash2, UserRound, X } from "lucide-react";
 import { DemoImg } from "@/components/sections/demo/DemoImg";
 import { DEFAULT_ADDR, DEFAULT_EMAIL } from "@/components/sections/demo/DemoMock";
 import {
-  Checkbox, Field, MobileSummary, money, OrderSummary, SplitLayout, StoreHeader, textOn, Toast, useToast,
+  AnimatedCheck, Checkbox, Field, MobileSummary, money, OrderSummary, SplitLayout, StoreHeader, textOn, Toast, useToast,
   type Brand, type CatalogProduct, type Line,
 } from "./shared";
 
@@ -18,6 +18,9 @@ type AddOptions = { off?: number; variant?: number; qty?: number };
 type Addr = typeof DEFAULT_ADDR & { line2: string; country: string };
 const EDIT_WINDOW = 60 * 60;
 const SUGGEST_OFF = 25;
+
+/** Sections rise in one after another, after the check has drawn. */
+const rise = (i: number): React.CSSProperties => ({ animationDelay: `${300 + i * 110}ms` });
 
 export function ThankYouPage({
   brand, initialLines, catalog, orderNo, accent, currency, shipping,
@@ -106,22 +109,20 @@ export function ThankYouPage({
   const main = (
     <>
       <div className="flex items-center gap-4">
-        <span className="flex size-[60px] shrink-0 items-center justify-center rounded-full border-2" style={{ borderColor: accent, color: accent }}>
-          <Check className="size-7" strokeWidth={2} />
-        </span>
-        <div>
+        <AnimatedCheck color={accent} size={60} />
+        <div className="cp-rise" style={rise(0)}>
           <div className="text-[15px] text-neutral-500">Confirmation #{orderNo}</div>
           <h1 className="cp-heading text-[28px] leading-tight">{cancelled ? "Your order is cancelled" : `Thank you, ${addr.first}!`}</h1>
         </div>
       </div>
 
       {cancelled ? (
-        <div className="mt-8 rounded-xl border border-neutral-200 p-6">
+        <div className="cp-rise mt-8 rounded-xl border border-neutral-200 p-6">
           <h2 className="cp-heading text-xl">Order cancelled</h2>
           <p className="mt-1.5 text-[15px] text-neutral-600">A refund of {fmt(paid)} has been issued to your original payment method.</p>
         </div>
       ) : (
-        <div className="mt-8 rounded-2xl border border-neutral-200 p-4 sm:p-5">
+        <div className="cp-rise mt-8 rounded-2xl border border-neutral-200 p-4 sm:p-5" style={rise(1)}>
           <p className="text-[16px] font-bold">
             You can make changes to your order for another{" "}
             <span className="text-[#e01b1b]">{mins} mins and {String(secs % 60).padStart(2, "0")} secs</span>
@@ -251,7 +252,7 @@ export function ThankYouPage({
       )}
 
       {!cancelled && suggestions.length > 0 && (
-        <div className="mt-6 rounded-2xl border border-neutral-200 p-4 sm:p-5">
+        <div className="cp-rise mt-6 rounded-2xl border border-neutral-200 p-4 sm:p-5" style={rise(2)}>
           <h2 className="cp-heading text-[22px]">You may also like these products</h2>
           <div className="-mx-1 mt-4 flex snap-x gap-4 overflow-x-auto px-1 pb-2">
             {suggestions.map((p) => (
@@ -262,7 +263,7 @@ export function ThankYouPage({
       )}
 
       {!cancelled && (
-        <div className="mt-6 overflow-hidden rounded-2xl border border-neutral-200">
+        <div className="cp-rise mt-6 overflow-hidden rounded-2xl border border-neutral-200" style={rise(3)}>
           <div className="p-5">
             <h2 className="cp-heading text-[22px]">Your order is confirmed</h2>
             <p className="mt-2 text-[16px]">You&apos;ll receive a confirmation email soon</p>
@@ -276,7 +277,7 @@ export function ThankYouPage({
         </div>
       )}
 
-      <div className="mt-6 rounded-2xl border border-neutral-200 p-5">
+      <div className="cp-rise mt-6 rounded-2xl border border-neutral-200 p-5" style={rise(4)}>
         <h2 className="cp-heading text-[22px]">Order details</h2>
         <div className="mt-4 grid gap-6 text-[15px] sm:grid-cols-2">
           <div className="space-y-6">
@@ -295,7 +296,7 @@ export function ThankYouPage({
         </div>
       </div>
 
-      <div className="mt-8 flex flex-wrap items-center justify-between gap-4">
+      <div className="cp-rise mt-8 flex flex-wrap items-center justify-between gap-4" style={rise(5)}>
         <p className="text-[15px]">
           Need help? <span className="cursor-pointer underline underline-offset-2" style={{ color: accent }}>Contact us</span>
         </p>
@@ -311,7 +312,7 @@ export function ThankYouPage({
     <>
       <StoreHeader brand={brand} />
       <MobileSummary accent={accent} total={fmt(total)}>{summary}</MobileSummary>
-      <SplitLayout main={main} side={summary} />
+      <SplitLayout main={main} side={<div className="cp-fade" style={{ animationDelay: "200ms" }}>{summary}</div>} />
 
       {confirming && (
         <AddressModal
@@ -426,10 +427,10 @@ function AddCard({ product: p, accent, fmt, onAdd }: CardProps & { onAdd: (qty: 
   return (
     <div className="flex w-[240px] shrink-0 snap-start flex-col rounded-xl border border-neutral-200 p-5">
       <DemoImg src={p.images[0]} alt={p.title} className="aspect-square w-full rounded-lg object-contain" />
-      <div className="mt-4 line-clamp-2 min-h-[2.8em] text-[16px] leading-snug">{p.title}</div>
-      <div className="mt-3 text-[17px] font-bold">{fmt(p.price)}</div>
-      <div className="mt-3"><Qty value={qty} onChange={setQty} /></div>
-      <button onClick={() => { onAdd(qty); setQty(1); }} className="mt-4 h-14 rounded-xl text-[17px] font-bold" style={{ background: accent, color: textOn(accent) }}>
+      <div className="mt-4 line-clamp-2 h-[2.8em] text-[16px] leading-snug">{p.title}</div>
+      <div className="mt-3 whitespace-nowrap text-[17px] font-bold">{fmt(p.price)}</div>
+      <div className="mt-auto pt-3"><Qty value={qty} onChange={setQty} /></div>
+      <button onClick={() => { onAdd(qty); setQty(1); }} className="mt-4 h-14 shrink-0 rounded-xl text-[17px] font-bold" style={{ background: accent, color: textOn(accent) }}>
         Add
       </button>
     </div>
@@ -448,22 +449,30 @@ function SuggestCard({ product: p, accent, fmt, onBuy }: CardProps & { onBuy: (v
     <div className="flex w-[250px] shrink-0 snap-start flex-col rounded-xl border border-neutral-200 p-5">
       <span className="self-start rounded-full bg-[#fde2e4] px-2.5 py-1 text-[14px] font-bold text-[#b42318]">{SUGGEST_OFF}% OFF</span>
       <DemoImg src={v?.image ?? p.images[0]} alt={p.title} className="mt-3 aspect-square w-full rounded-lg object-contain" />
-      <div className="mt-4 line-clamp-3 min-h-[4.2em] text-[16px] font-bold leading-snug">{p.title}</div>
-      <div className="mt-2 flex items-baseline gap-2.5 text-[18px]">
+      <div className="mt-4 line-clamp-3 h-[4.2em] text-[16px] font-bold leading-snug">{p.title}</div>
+      <div className="mt-2 flex items-baseline gap-2.5 whitespace-nowrap text-[18px]">
         <span className="text-neutral-400 line-through">{fmt(full)}</span>
         <span className="font-bold text-[#1f8a4c]">{fmt(deal)}</span>
       </div>
-      {hasVariants && (
-        <label className="relative mt-3 block rounded-xl border border-neutral-300 px-4 pb-2 pt-6">
-          <span className="pointer-events-none absolute left-4 top-2 text-[13px] text-neutral-500">Variant</span>
-          <select value={variant} onChange={(e) => setVariant(Number(e.target.value))} className="w-full appearance-none truncate bg-transparent pr-6 text-[16px] outline-none">
-            {p.variants.map((x, i) => <option key={x.id} value={i}>{x.title}</option>)}
-          </select>
-          <ChevronDown className="pointer-events-none absolute right-4 top-1/2 size-4 -translate-y-1/2 text-neutral-500" />
-        </label>
-      )}
-      <div className="mt-3"><Qty value={qty} onChange={setQty} /></div>
-      <button onClick={() => { onBuy(variant, qty); setQty(1); }} className="mt-4 h-14 rounded-xl text-[17px] font-bold" style={{ background: accent, color: textOn(accent) }}>
+      {/* every card keeps the variant row, so prices, steppers and buttons line up across cards */}
+      <label
+        className={`relative mt-3 block rounded-xl border border-neutral-300 px-4 pb-2 pt-6 ${hasVariants ? "" : "invisible"}`}
+        aria-hidden={!hasVariants}
+      >
+        <span className="pointer-events-none absolute left-4 top-2 text-[13px] text-neutral-500">Variant</span>
+        <select
+          value={variant}
+          onChange={(e) => setVariant(Number(e.target.value))}
+          disabled={!hasVariants}
+          tabIndex={hasVariants ? undefined : -1}
+          className="w-full appearance-none truncate bg-transparent pr-6 text-[16px] outline-none"
+        >
+          {p.variants.length ? p.variants.map((x, i) => <option key={x.id} value={i}>{x.title}</option>) : <option>Default</option>}
+        </select>
+        <ChevronDown className="pointer-events-none absolute right-4 top-1/2 size-4 -translate-y-1/2 text-neutral-500" />
+      </label>
+      <div className="mt-auto pt-3"><Qty value={qty} onChange={setQty} /></div>
+      <button onClick={() => { onBuy(variant, qty); setQty(1); }} className="mt-4 h-14 shrink-0 rounded-xl text-[17px] font-bold" style={{ background: accent, color: textOn(accent) }}>
         Buy now
       </button>
     </div>
@@ -500,9 +509,9 @@ function ExploreModal({
           {shown.map((p) => (
             <div key={p.id} className="flex flex-col rounded-xl border border-neutral-200 p-5">
               <DemoImg src={p.images[0]} alt={p.title} className="mx-auto aspect-square w-full max-w-[180px] rounded-xl object-contain" />
-              <div className="mt-4 line-clamp-2 min-h-[2.8em] text-[16px] leading-snug">{p.title}</div>
-              <div className="mt-3 text-[17px] font-bold">{fmt(p.price)}</div>
-              <button onClick={() => onBuy(p)} className="mt-4 h-14 rounded-xl text-[17px] font-bold" style={{ background: accent, color: textOn(accent) }}>
+              <div className="mt-4 line-clamp-2 h-[2.8em] text-[16px] leading-snug">{p.title}</div>
+              <div className="mb-4 mt-3 whitespace-nowrap text-[17px] font-bold">{fmt(p.price)}</div>
+              <button onClick={() => onBuy(p)} className="mt-auto h-14 shrink-0 rounded-xl text-[17px] font-bold" style={{ background: accent, color: textOn(accent) }}>
                 Buy Now
               </button>
             </div>

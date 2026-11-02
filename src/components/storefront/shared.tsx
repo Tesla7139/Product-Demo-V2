@@ -130,9 +130,41 @@ export function StoreFrame({ brand, children }: { brand: Brand; children: React.
       style={{ fontFamily: f?.body || undefined, ["--cp-heading" as string]: f?.heading || f?.body || "inherit" }}
     >
       {f?.css && <style dangerouslySetInnerHTML={{ __html: f.css }} />}
-      <style>{`.cp-store .cp-heading{font-family:var(--cp-heading)}`}</style>
+      <style>{`.cp-store .cp-heading{font-family:var(--cp-heading)}${MOTION_CSS}`}</style>
       {children}
     </div>
+  );
+}
+
+// Page motion for the order flow: sections rise in one after another (cp-rise with
+// a per-section animationDelay), and confirmation checks draw themselves.
+const MOTION_CSS = `
+@keyframes cp-rise{from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:none}}
+@keyframes cp-fade{from{opacity:0}to{opacity:1}}
+@keyframes cp-draw{to{stroke-dashoffset:0}}
+@keyframes cp-pop{0%{transform:scale(.6);opacity:0}60%{transform:scale(1.08);opacity:1}100%{transform:scale(1)}}
+.cp-store .cp-rise{animation:cp-rise .55s cubic-bezier(.2,.8,.2,1) both}
+.cp-store .cp-fade{animation:cp-fade .4s ease both}
+@keyframes cp-slide{from{opacity:0;transform:translateX(32px)}to{opacity:1;transform:none}}
+.cp-store .cp-slide{animation:cp-slide .45s cubic-bezier(.2,.8,.2,1) both}
+.cp-store .cp-pop{animation:cp-pop .5s cubic-bezier(.2,.8,.2,1) both}
+.cp-store .cp-draw{stroke-dasharray:var(--len);stroke-dashoffset:var(--len);animation:cp-draw .6s cubic-bezier(.65,0,.35,1) forwards}
+@media (prefers-reduced-motion:reduce){.cp-store .cp-rise,.cp-store .cp-fade,.cp-store .cp-slide,.cp-store .cp-pop,.cp-store .cp-draw{animation:none;stroke-dashoffset:0}}
+`;
+
+/** A check mark in a ring that draws itself: ring first, then the tick. */
+export function AnimatedCheck({ color, size = 60, delay = 0 }: { color: string; size?: number; delay?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 52 52" fill="none" className="cp-pop shrink-0" style={{ animationDelay: `${delay}ms` }} aria-hidden>
+      <circle
+        cx="26" cy="26" r="24" stroke={color} strokeWidth="2.5"
+        className="cp-draw" style={{ ["--len" as string]: 151, animationDelay: `${delay + 100}ms` }}
+      />
+      <path
+        d="M15 27l7 7 15-16" stroke={color} strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"
+        className="cp-draw" style={{ ["--len" as string]: 36, animationDelay: `${delay + 550}ms` }}
+      />
+    </svg>
   );
 }
 

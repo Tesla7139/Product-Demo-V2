@@ -3,18 +3,54 @@
 import { useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { Globe, Monitor, Smartphone, X } from "lucide-react";
+import { LoadingView } from "@/components/sections/demo/DemoExperience";
 
 type Device = "desktop" | "mobile";
-/** intro: laptop shown while the store loads · entering: zooming into its screen · site: the store */
-type Phase = "intro" | "entering" | "site";
+/**
+ * loading: the "Building <store>" screen while the store loads · intro: the
+ * laptop welcome · entering: zooming into its screen · site: the store
+ */
+type Phase = "loading" | "intro" | "entering" | "site";
 
-/** Keep the intro up at least this long so the welcome reads, then zoom in. */
-const MIN_INTRO_MS = 1800;
-const ZOOM_MS = 700;
+/** The loading screen stays at least this long so it reads (as in v1). */
+const MIN_LOADING_MS = 1400;
+/** Then holds its green "ready" state for a beat before the welcome. */
+const READY_HOLD_MS = 550;
+/** How long the laptop welcome shows before zooming in. */
+const INTRO_MS = 1100;
+const ZOOM_MS = 600;
 
 /** "https://www.Store.com/x" -> "www.store.com" (what /clone/<host>/ expects). */
 export function hostOf(url: string): string {
   return url.trim().replace(/^https?:\/\//i, "").split(/[/?#]/)[0].toLowerCase();
+}
+
+/** "https://store.com/products/x?y" -> "/products/x?y" ("" for a bare domain). */
+function pathOf(url: string): string {
+  const rest = url.trim().replace(/^https?:\/\//i, "").match(/^[^/?#]+(.*)$/)?.[1] ?? "";
+  return rest === "/" ? "" : rest;
+}
+
+const START_LOOKUP_MS = 8000;
+
+/**
+ * Where to open the store: one of its product pages (on its English site when it
+ * has one), so the demo goes straight to add-to-cart and checkout — see
+ * /api/clone-start. Path is null when there's no readable catalog.
+ */
+async function startPage(host: string): Promise<{ host: string; path: string | null }> {
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), START_LOOKUP_MS);
+  try {
+    const res = await fetch(`/api/clone-start?host=${encodeURIComponent(host)}`, { signal: controller.signal });
+    if (!res.ok) return { host, path: null };
+    const data = (await res.json()) as { host?: string; path?: string | null };
+    return { host: data.host || host, path: data.path ?? null };
+  } catch {
+    return { host, path: null }; // too slow — open the homepage
+  } finally {
+    window.clearTimeout(timer);
+  }
 }
 
 /** "www.gullylabs.com" -> "Gullylabs" until the store's real name arrives. */
@@ -31,38 +67,63 @@ function nameFromHost(host: string) {
 export function StorefrontViewer({ url, onClose }: { url: string | null; onClose: () => void }) {
   const [device, setDevice] = useState<Device>("desktop");
   const [src, setSrc] = useState<string | null>(null);
-  const [phase, setPhase] = useState<Phase>("intro");
+  const [phase, setPhase] = useState<Phase>("loading");
+  const [loadingDone, setLoadingDone] = useState(false); // loading screen shows its green "ready" state
   const [ready, setReady] = useState(false); // first page of the store has loaded
   const [navigating, setNavigating] = useState(false); // later pages, inside the copy
   const [brand, setBrand] = useState<{ name?: string; logo?: string | null }>({});
   const openedAt = useRef(0);
   const host = url ? hostOf(url) : "";
+  const startPath = url ? pathOf(url) : "";
 
   // A new store starts with an empty cart; clear the session before the frame mounts.
+  // A pasted page URL opens as-is; a bare domain opens on one of its products
+  // (looked up while the laptop intro plays), or the homepage if there's no catalog.
   useEffect(() => {
     if (!host) return;
     try {
       sessionStorage.removeItem("cp-cart");
       sessionStorage.removeItem("cp-brand");
+      sessionStorage.removeItem("cp-open-product");
     } catch {
       /* storage blocked — the copy still works, the cart just won't persist */
     }
     openedAt.current = Date.now();
     /* eslint-disable react-hooks/set-state-in-effect -- frame src + intro follow the session reset above */
-    setPhase("intro");
+    setPhase("loading");
+    setLoadingDone(false);
     setReady(false);
     setBrand({});
-    setSrc(`/clone/${host}`);
+    setSrc(null);
     /* eslint-enable react-hooks/set-state-in-effect */
-  }, [host]);
+    let cancelled = false;
+    (startPath ? Promise.resolve({ host, path: startPath }) : startPage(host)).then((start) => {
+      if (cancelled) return;
+      // no catalog to pick from: open the homepage and let the runtime follow its first product link
+      if (start.path === null) {
+        try { sessionStorage.setItem("cp-open-product", "1"); } catch { /* stays on the homepage */ }
+      }
+      setSrc(`/clone/${start.host}${start.path ?? ""}`);
+    });
+    return () => { cancelled = true; };
+  }, [host, startPath]);
 
-  // once the store is ready (and the intro has had its moment), zoom into the laptop
+  // once the store has loaded (and the loading screen has had its moment), flip it
+  // to "ready", then hand over to the laptop welcome
   useEffect(() => {
-    if (phase !== "intro" || !ready) return;
-    const wait = Math.max(600, MIN_INTRO_MS - (Date.now() - openedAt.current));
-    const t = window.setTimeout(() => setPhase("entering"), wait);
-    return () => window.clearTimeout(t);
+    if (phase !== "loading" || !ready) return;
+    const wait = Math.max(0, MIN_LOADING_MS - (Date.now() - openedAt.current));
+    const t1 = window.setTimeout(() => setLoadingDone(true), wait);
+    const t2 = window.setTimeout(() => setPhase("intro"), wait + READY_HOLD_MS);
+    return () => { window.clearTimeout(t1); window.clearTimeout(t2); };
   }, [phase, ready]);
+
+  // the laptop welcome has had its moment — zoom into it
+  useEffect(() => {
+    if (phase !== "intro") return;
+    const t = window.setTimeout(() => setPhase("entering"), INTRO_MS);
+    return () => window.clearTimeout(t);
+  }, [phase]);
 
   // the zoom has filled the view with the laptop's screen — hand over to the site
   useEffect(() => {
@@ -144,7 +205,19 @@ export function StorefrontViewer({ url, onClose }: { url: string | null; onClose
             </div>
 
             <AnimatePresence>
-              {phase !== "site" && (
+              {phase === "loading" && (
+                <motion.div
+                  key="loading"
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  exit={{ opacity: 0 }}
+                  transition={{ duration: 0.35 }}
+                  className="absolute inset-0 z-30 bg-white"
+                >
+                  <LoadingView label={host.replace(/^www\./, "")} ready={loadingDone} className="h-full" />
+                </motion.div>
+              )}
+              {(phase === "intro" || phase === "entering") && (
                 <LaptopIntro
                   key="intro"
                   domain={host.replace(/^www\./, "")}

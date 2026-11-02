@@ -4,7 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { motion } from "framer-motion";
 import { Container } from "@/components/primitives/Container";
 import { DemoUrlInput } from "./demo/DemoUrlInput";
-import { StorefrontViewer } from "@/components/storefront/StorefrontViewer";
+import { hostOf, StorefrontViewer } from "@/components/storefront/StorefrontViewer";
 import { fadeUp, staggerContainer } from "@/lib/motion";
 
 // store URL -> path slug (its domain), e.g. "https://www.gullylabs.com/x" -> "gullylabs.com"
@@ -25,6 +25,20 @@ export function Hero() {
     if (window.location.hash === "#demo") onShake();
     return () => window.removeEventListener("demo:shake", onShake);
   }, []);
+
+  // Warm the preview while the URL is still being typed: once the field holds a
+  // plausible domain (and typing pauses), the server starts picking the product
+  // page and pre-fetching it, so the preview opens on work that's already done.
+  useEffect(() => {
+    if (previewUrl) return;
+    const host = hostOf(url);
+    const isBareDomain = /^[a-z0-9-]+(\.[a-z0-9-]+)*\.[a-z]{2,}$/.test(host) && !/^[^/?#]+[/?#]./.test(url.trim().replace(/^https?:\/\//i, ""));
+    if (!isBareDomain) return;
+    const t = window.setTimeout(() => {
+      fetch(`/api/clone-start?host=${encodeURIComponent(host)}&warm=1`).catch(() => {});
+    }, 600);
+    return () => window.clearTimeout(t);
+  }, [url, previewUrl]);
 
   // shareable deep link: /product-demo/gullylabs.com auto-opens that store
   // (also supports the legacy ?store= query param)

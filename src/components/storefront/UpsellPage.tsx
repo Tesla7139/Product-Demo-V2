@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { ArrowLeft, ArrowRight, Check, Loader2 } from "lucide-react";
 import { DemoImg } from "@/components/sections/demo/DemoImg";
-import { money, StoreLogo, textOn, type Brand, type CatalogProduct, type Line } from "./shared";
+import { AnimatedCheck, money, StoreLogo, textOn, type Brand, type CatalogProduct, type Line } from "./shared";
 
 // Post-purchase offers shown right after payment: one product at a time, a
 // limited-time discount, the product's real options, Pay now / Decline.
@@ -51,9 +51,7 @@ export function UpsellPage({
         <div className="mx-auto max-w-[1100px] px-5 py-5 lg:px-10">
           <StoreLogo brand={brand} className="max-h-7 max-w-[150px] object-contain" />
           <div className="mt-2 flex items-start gap-3">
-            <span className="mt-1 flex size-8 shrink-0 items-center justify-center rounded-full border-2" style={{ borderColor: accent, color: accent }}>
-              <Check className="size-4" strokeWidth={2.5} />
-            </span>
+            <span className="mt-1"><AnimatedCheck color={accent} size={32} /></span>
             <div>
               <div className="text-[15px]">Confirmation #{orderNo}</div>
               <div className="cp-heading text-[22px] leading-tight">You&apos;ve paid for your order.</div>
@@ -66,7 +64,7 @@ export function UpsellPage({
       </div>
 
       <div className="border-b border-neutral-200 bg-[#f7f7f7] px-5 py-5 text-center">
-        <div className="text-[17px] font-bold">Just for you · {pct}% off · Ends in {timer}</div>
+        <div key={pct} className="cp-fade text-[17px] font-bold">Just for you · {pct}% off · Ends in {timer}</div>
         <div className="cp-heading mt-2 text-[16px] text-neutral-700">Add it to your current order. Same box, no extra shipping.</div>
       </div>
 
@@ -133,7 +131,7 @@ function Offer({
   };
 
   return (
-    <div className="mx-auto grid max-w-[1100px] gap-8 px-5 py-8 lg:grid-cols-[minmax(0,1fr)_480px] lg:gap-14 lg:px-10">
+    <div className="cp-slide mx-auto grid max-w-[1100px] gap-8 px-5 py-8 lg:grid-cols-[minmax(0,1fr)_480px] lg:gap-14 lg:px-10">
       <div>
         <div className="flex aspect-square items-center justify-center overflow-hidden bg-[#f2f2f0]">
           <DemoImg src={current} alt={offer.title} className="size-full object-contain" />
@@ -193,7 +191,7 @@ function Offer({
           {paying === "paying" ? (
             <><Loader2 className="size-5 animate-spin" /> Processing…</>
           ) : paying === "done" ? (
-            <><Check className="size-5" strokeWidth={3} /> Added to your order</>
+            <><Check className="cp-pop size-5" strokeWidth={3} /> Added to your order</>
           ) : (
             <>Pay now · {fmt(deal)} {currency}</>
           )}

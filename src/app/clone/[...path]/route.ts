@@ -1,5 +1,8 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { getUpstream, isBlockedHost, unlockStorefront, type Upstream } from "@/lib/clone/upstream";
+import { getUpstream, isBlockedHost, unlockStorefront } from "@/lib/clone/upstream";
+import { cachedUpstream, cacheKey, DATA_TTL, PAGE_TTL } from "@/lib/clone/cache";
+import { BACKGROUND_SCRIPTS, stripBackgroundScripts } from "@/lib/clone/blocklist";
+import { alternateHosts, englishAlternate } from "@/lib/clone/locale";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -40,13 +43,26 @@ function escapeAttr(s: string) {
   return s.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
 }
 
-function inject(html: string, opts: { finalUrl: string; hosts: string[]; origin: string }) {
-  const config = { hosts: opts.hosts, base: opts.finalUrl };
+/**
+ * A Jina snapshot is the page after the store's JavaScript already ran. Running
+ * those scripts again on top of it (without the cookies and state they set up)
+ * makes app-style storefronts crash and blank the page — so keep the rendered
+ * HTML and drop the scripts; the runtime handles navigation, cart and pop-ups.
+ */
+function stripScripts(html: string) {
+  return html
+    .replace(/<script\b(?![^>]*type=["']application\/(?:ld\+)?json["'])[^>]*>[\s\S]*?<\/script>/gi, "")
+    .replace(/<link[^>]+rel=["'](?:modulepreload|preload)["'][^>]*as=["']script["'][^>]*>/gi, "")
+    .replace(/<noscript\b[^>]*>[\s\S]*?<\/noscript>/gi, "");
+}
+
+function inject(html: string, opts: { finalUrl: string; hosts: string[]; origin: string; snapshot: boolean }) {
+  const config = { hosts: opts.hosts, base: opts.finalUrl, snapshot: opts.snapshot, blockSrc: BACKGROUND_SCRIPTS.source };
   const tags =
     `<base href="${escapeAttr(opts.finalUrl)}">` +
     `<script>window.__CP=${JSON.stringify(config).replace(/</g, "\\u003c")}</script>` +
     `<script src="${opts.origin}/clone-runtime.js"></script>`;
-  const out = html
+  const out = stripBackgroundScripts(html)
     // the store's own CSP would block our runtime and the proxied requests
     .replace(/<meta[^>]+http-equiv=["']?content-security-policy["']?[^>]*>/gi, "")
     // and a <meta refresh> would navigate the frame out of the copy
@@ -55,6 +71,21 @@ function inject(html: string, opts: { finalUrl: string; hosts: string[]; origin:
   if (!head || head.index === undefined) return tags + out;
   const at = head.index + head[0].length;
   return out.slice(0, at) + tags + out.slice(at);
+}
+
+/**
+ * Hand the store's cookies to the copy. Headless storefronts (e.g. Next.js ones)
+ * set cookies like a country/market code server-side and crash when the page
+ * can't read them back. Re-scoped to our origin: no Domain, Path=/, and no
+ * Secure/SameSite=None so they also stick on plain-http dev hosts.
+ */
+function relayCookies(headers: Headers, setCookies: string[]) {
+  for (const raw of setCookies) {
+    const [pair, ...attrs] = raw.split(";").map((a) => a.trim());
+    if (!pair.includes("=")) continue;
+    const kept = attrs.filter((a) => !/^(domain|path|secure|samesite|partitioned)\b/i.test(a));
+    headers.append("Set-Cookie", [pair, "Path=/", "SameSite=Lax", ...kept].join("; "));
+  }
 }
 
 function errorPage(host: string) {
@@ -66,31 +97,22 @@ button{font:inherit;font-weight:600;padding:10px 22px;border-radius:8px;border:1
 <body><main><h1>${h} couldn't be loaded</h1><p>The store didn't respond. It may be offline or blocking automated requests.</p><button onclick="location.reload()">Try again</button></main></body></html>`;
 }
 
-// Short-lived cache for the theme's data requests (product JSON, sections, search):
-// the same few lookups repeat as a shopper browses and adds to cart.
-const dataCache = new Map<string, { up: Upstream; at: number }>();
-const DATA_TTL = 5 * 60 * 1000;
-
 export async function GET(req: NextRequest, ctx: Ctx) {
   const r = await resolve(req, ctx);
   if (!r) return new NextResponse("Invalid store", { status: 400 });
 
   const page = isPageLoad(req);
   const digest = req.cookies.get(cookieName(bare(r.host)))?.value;
-  const key = `${digest ?? ""}|${r.target}`;
-  const hit = page ? undefined : dataCache.get(key);
-  const up =
-    hit && Date.now() - hit.at < DATA_TTL
-      ? hit.up
-      : await getUpstream(r.target, {
-          accept: page ? "text/html,application/xhtml+xml" : req.headers.get("accept") || "*/*",
-          cookie: digest ? `storefront_digest=${digest}` : undefined,
-          page,
-        });
-  if (up && !page && up.status < 400 && up.body.byteLength < 2_000_000) {
-    if (dataCache.size > 300) dataCache.delete(dataCache.keys().next().value!);
-    dataCache.set(key, { up, at: Date.now() });
-  }
+  // Pages and the theme's data requests both go through the shared cache: data
+  // lookups repeat as a shopper browses, and the page a preview opens on has
+  // usually been pre-fetched by /api/clone-start already (or is still in flight).
+  let up = await cachedUpstream(cacheKey(page ? "page" : "data", r.target, digest), page ? PAGE_TTL : DATA_TTL, () =>
+    getUpstream(r.target, {
+      accept: page ? "text/html,application/xhtml+xml" : req.headers.get("accept") || "*/*",
+      cookie: digest ? `storefront_digest=${digest}` : undefined,
+      page,
+    })
+  );
 
   if (!up) {
     return page
@@ -99,13 +121,31 @@ export async function GET(req: NextRequest, ctx: Ctx) {
   }
 
   if (page && /text\/html/i.test(up.contentType)) {
+    let raw = up.body.toString("utf8");
+    // Stores like doonails.com default to their home language and send everyone
+    // else to an English site on another domain — a hop the copy would block.
+    // Take that hop here instead, when the page lists an English version.
+    const english = englishAlternate(raw, up.finalUrl);
+    if (english) {
+      const en = await cachedUpstream(cacheKey("page", english), PAGE_TTL, () =>
+        getUpstream(english, { accept: "text/html,application/xhtml+xml", page: true })
+      );
+      if (en && en.status < 400 && /text\/html/i.test(en.contentType)) {
+        up = en;
+        raw = en.body.toString("utf8");
+      }
+    }
     const finalHost = new URL(up.finalUrl).hostname;
-    const hosts = [...new Set([bare(r.host), bare(finalHost)])];
-    const html = inject(up.body.toString("utf8"), { finalUrl: up.finalUrl, hosts, origin: req.nextUrl.origin });
-    return new NextResponse(html, {
+    // the store's other language/market domains count as the same store
+    const hosts = [...new Set([bare(r.host), bare(finalHost), ...alternateHosts(raw)])];
+    const snapshot = up.via === "jina";
+    const html = inject(snapshot ? stripScripts(raw) : raw, { finalUrl: up.finalUrl, hosts, origin: req.nextUrl.origin, snapshot });
+    const res = new NextResponse(html, {
       status: up.status,
       headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" },
     });
+    relayCookies(res.headers, up.setCookies);
+    return res;
   }
 
   return new NextResponse(new Uint8Array(up.body), {

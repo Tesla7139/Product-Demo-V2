@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { CreditCard, Loader2, Lock, ShoppingBag } from "lucide-react";
 import { DEFAULT_ADDR, DEFAULT_EMAIL, DEFAULT_PHONE } from "@/components/sections/demo/DemoMock";
 import {
@@ -9,13 +9,18 @@ import {
 } from "./shared";
 import { UpsellPage } from "./UpsellPage";
 import { ThankYouPage } from "./ThankYouPage";
+import { ProcessingScreen } from "./ProcessingScreen";
 
 // The order flow that follows the storefront copy: checkout → post-purchase
 // offers → thank-you page with order editing. The cart and the store's look
 // (name, logo, button colour, fonts, currency) are left in sessionStorage by
 // /clone-runtime.js.
 
-type Stage = "checkout" | "upsell" | "thankyou";
+// processing / finalizing are the full-screen moments over the page before them
+type Stage = "checkout" | "processing" | "upsell" | "finalizing" | "thankyou";
+
+const PAYMENT_STEPS = ["Verifying payment details", "Processing payment", "Confirming your order"];
+const UPDATE_STEPS = ["Adding your new items", "Updating your order"];
 
 export function CheckoutFlow() {
   const [loaded, setLoaded] = useState(false);
@@ -37,11 +42,24 @@ export function CheckoutFlow() {
     if (b.host) loadCatalog(b.host).then(setCatalog);
   }, []);
 
+  // the overlays sit on the page they follow — only a real page change scrolls up
   useEffect(() => {
-    window.scrollTo(0, 0);
+    if (stage !== "processing" && stage !== "finalizing") window.scrollTo(0, 0);
   }, [stage]);
 
-  if (!loaded) return <div className="min-h-screen bg-white" />;
+  const toThankYou = useCallback(() => setStage("thankyou"), []);
+  // offers come from the catalog; without any, payment goes straight to the confirmation
+  const hasOffers = catalog.some((p) => !cart.some((l) => l.title.toLowerCase() === p.title.toLowerCase()));
+  const afterPayment = useCallback(() => setStage(hasOffers ? "upsell" : "thankyou"), [hasOffers]);
+
+  if (!loaded) {
+    return (
+      <div className="min-h-screen bg-white">
+        <div className="h-16 border-b border-neutral-200 lg:h-20" />
+        <SplitLayout main={<FormSkeleton />} side={<SummarySkeleton />} />
+      </div>
+    );
+  }
 
   const currency = brand.currency || "USD";
   const accent = brand.accent || "#111827";
@@ -64,18 +82,23 @@ export function CheckoutFlow() {
         </div>
       </>
     );
-  } else if (stage === "upsell" && offers.length) {
+  } else if ((stage === "upsell" || stage === "finalizing") && offers.length) {
     page = (
-      <UpsellPage
-        brand={brand}
-        offers={offers}
-        orderNo={orderNo}
-        accent={accent}
-        currency={currency}
-        onDone={(lines) => { setAccepted(lines); setStage("thankyou"); }}
-      />
+      <>
+        <UpsellPage
+          brand={brand}
+          offers={offers}
+          orderNo={orderNo}
+          accent={accent}
+          currency={currency}
+          onDone={(lines) => { setAccepted(lines); setStage(lines.length ? "finalizing" : "thankyou"); }}
+        />
+        {stage === "finalizing" && (
+          <ProcessingScreen brand={brand} accent={accent} title="Updating your order" steps={UPDATE_STEPS} onDone={toThankYou} />
+        )}
+      </>
     );
-  } else if (stage !== "checkout") {
+  } else if (stage !== "checkout" && stage !== "processing") {
     page = (
       <ThankYouPage
         brand={brand}
@@ -88,7 +111,21 @@ export function CheckoutFlow() {
       />
     );
   } else {
-    page = <Checkout brand={brand} lines={cart} currency={currency} accent={accent} shipping={shipping} onPaid={() => setStage("upsell")} />;
+    page = (
+      <>
+        <Checkout brand={brand} lines={cart} currency={currency} accent={accent} shipping={shipping} onPaid={() => setStage("processing")} />
+        {stage === "processing" && (
+          <ProcessingScreen
+            brand={brand}
+            accent={accent}
+            title="Your order's being processed"
+            steps={PAYMENT_STEPS}
+            success={{ title: "Payment successful", subtitle: `Order #${orderNo} is confirmed` }}
+            onDone={afterPayment}
+          />
+        )}
+      </>
+    );
   }
 
   return <StoreFrame brand={brand}>{page}</StoreFrame>;
@@ -98,14 +135,20 @@ function Checkout({
   brand, lines, currency, accent, shipping, onPaid,
 }: { brand: Brand; lines: Line[]; currency: string; accent: string; shipping: number; onPaid: () => void }) {
   const [paying, setPaying] = useState(false);
+  const [ready, setReady] = useState(false); // a beat of skeleton, as a real checkout loads
   const fmt = (n: number) => money(n, currency);
   const total = lines.reduce((s, l) => s + l.price * l.qty, 0) + shipping;
+
+  useEffect(() => {
+    const t = window.setTimeout(() => setReady(true), 700);
+    return () => window.clearTimeout(t);
+  }, []);
 
   const pay = (e: React.FormEvent) => {
     e.preventDefault();
     if (paying) return;
     setPaying(true);
-    window.setTimeout(onPaid, 1800);
+    window.setTimeout(onPaid, 900); // the button spins briefly, then the processing screen takes over
   };
 
   const summary = <OrderSummary lines={lines} currency={currency} shipping={shipping} discountBox />;
@@ -175,9 +218,49 @@ function Checkout({
           </a>
         }
       />
-      <MobileSummary accent={accent} total={fmt(total)}>{summary}</MobileSummary>
-      <SplitLayout main={form} side={summary} />
+      {ready ? (
+        <>
+          <MobileSummary accent={accent} total={fmt(total)}>{summary}</MobileSummary>
+          <SplitLayout main={<div className="cp-fade">{form}</div>} side={<div className="cp-fade">{summary}</div>} />
+        </>
+      ) : (
+        <SplitLayout main={<FormSkeleton />} side={<SummarySkeleton />} />
+      )}
     </>
+  );
+}
+
+function FormSkeleton() {
+  return (
+    <div className="animate-pulse space-y-9" aria-busy="true" aria-label="Loading checkout">
+      {[2, 6, 1, 4].map((rows, s) => (
+        <div key={s}>
+          <div className="h-6 w-40 rounded-md bg-neutral-200" />
+          <div className="mt-4 grid gap-3">
+            {Array.from({ length: rows }, (_, i) => <div key={i} className="h-[54px] rounded-lg bg-neutral-100" />)}
+          </div>
+        </div>
+      ))}
+      <div className="h-[60px] rounded-xl bg-neutral-200" />
+    </div>
+  );
+}
+
+function SummarySkeleton() {
+  return (
+    <div className="animate-pulse space-y-4">
+      <div className="flex items-center gap-4">
+        <div className="size-16 rounded-lg bg-neutral-200" />
+        <div className="flex-1 space-y-2">
+          <div className="h-3.5 w-3/4 rounded-full bg-neutral-200" />
+          <div className="h-3 w-1/3 rounded-full bg-neutral-200" />
+        </div>
+      </div>
+      <div className="h-12 rounded-md bg-neutral-200/70" />
+      <div className="h-3.5 rounded-full bg-neutral-200/70" />
+      <div className="h-3.5 rounded-full bg-neutral-200/70" />
+      <div className="h-5 w-1/2 rounded-full bg-neutral-200" />
+    </div>
   );
 }
 

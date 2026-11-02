@@ -97,18 +97,25 @@ function cleanDomain(url: string): string {
 
 const READY = "#10b981"; // green "ready" accent
 
-function LoadingView({ label }: { label: string }) {
-  const [done, setDone] = useState(false);
+/**
+ * "Building <brand>" loading screen. Pass `ready` to flip it to the green ready
+ * state when the content has actually loaded (the storefront preview does);
+ * without it, it flips on a timer just before the welcome splash.
+ */
+export function LoadingView({ label, ready, className = "h-screen" }: { label: string; ready?: boolean; className?: string }) {
+  const [timedDone, setTimedDone] = useState(false);
+  const done = ready ?? timedDone;
   const accent = done ? READY : WARM;
 
   useEffect(() => {
+    if (ready !== undefined) return;
     // flip to the green "ready" state just before the parent opens the welcome splash
-    const t = setTimeout(() => setDone(true), 3500);
+    const t = setTimeout(() => setTimedDone(true), 3500);
     return () => clearTimeout(t);
-  }, []);
+  }, [ready]);
 
   return (
-    <div className="relative flex h-screen overflow-hidden bg-background">
+    <div className={`relative flex overflow-hidden bg-background ${className}`}>
       {/* soft glow top-left */}
       <div className="pointer-events-none absolute -left-24 -top-24 size-72 rounded-full blur-3xl transition-colors duration-500" style={{ background: `${accent}22` }} />
 
