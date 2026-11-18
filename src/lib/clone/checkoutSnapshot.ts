@@ -168,6 +168,14 @@ type CartJs = {
   items?: { variant_id: number; product_title: string; variant_title: string | null; final_price: number; quantity: number; image: string | null }[];
 };
 
+/** Why the last capture for a store came back empty — sent as a response header for debugging. */
+export const snapshotFailures = new Map<string, string>();
+function fail(host: string, why: string): null {
+  snapshotFailures.set(host, why);
+  console.error(`[checkoutSnapshot] ${host}: ${why}`);
+  return null;
+}
+
 async function capture(host: string, handle: string | null): Promise<CheckoutSnapshot | null> {
   const b = await getBrowser();
   const page = await b.newPage();
@@ -181,11 +189,11 @@ async function capture(host: string, handle: string | null): Promise<CheckoutSna
     await page.goto(`https://${host}/cart.js`, { waitUntil: "domcontentloaded", timeout: 20000 });
     const cart = (await page.evaluate(`${ADD_TO_CART}(${JSON.stringify(handle)})`)) as CartJs | null;
     const item = cart?.items?.[0];
-    if (!item) return null;
+    if (!item) return fail(host, "add to cart failed");
 
     await page.goto(`https://${host}/checkout?skip_shop_pay=true`, { waitUntil: "networkidle2", timeout: 40000 }).catch(() => {});
     const url = page.url();
-    if (!/\/checkouts?\//.test(url) || /shop\.app/.test(url)) return null;
+    if (!/\/checkouts?\//.test(url) || /shop\.app/.test(url)) return fail(host, `checkout landed on ${url.slice(0, 120)}`);
     // Wait for the page to finish arriving: every express wallet the store has on
     // (they load late) and no loading placeholders left — capturing earlier froze
     // grey skeleton blocks into the picture.
@@ -206,7 +214,7 @@ async function capture(host: string, handle: string | null): Promise<CheckoutSna
       .catch(() => {});
     await new Promise((r) => setTimeout(r, 800)); // late extensions (banners, add-ons) settle
     const html = (await page.evaluate(`${SERIALIZE}(${JSON.stringify(enabled)})`)) as string;
-    if (!html || html.length < 20_000) return null;
+    if (!html || html.length < 20_000) return fail(host, `page too small (${html ? html.length : 0} bytes)`);
 
     return {
       html,
@@ -236,8 +244,7 @@ export function checkoutSnapshot(host: string, handle: string | null = null): Pr
   const hit = snapshots.get(host);
   if (hit && Date.now() - hit.at < TTL) return hit.value;
   const value = capture(host, handle).catch((err: unknown) => {
-    console.error(`[checkoutSnapshot] ${host}:`, err instanceof Error ? err.message : err);
-    return null;
+    return fail(host, err instanceof Error ? err.message : String(err));
   });
   snapshots.set(host, { at: Date.now(), value });
   value.then((s) => {

@@ -1,6 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { isBlockedHost } from "@/lib/clone/upstream";
-import { checkoutSnapshot } from "@/lib/clone/checkoutSnapshot";
+import { checkoutSnapshot, snapshotFailures } from "@/lib/clone/checkoutSnapshot";
 
 export const runtime = "nodejs";
 export const maxDuration = 60; // a cold capture renders the store's checkout in a headless browser
@@ -16,7 +16,11 @@ export async function GET(req: NextRequest) {
   const handle = req.nextUrl.searchParams.get("handle");
 
   const snap = await checkoutSnapshot(host, handle);
-  if (!snap) return NextResponse.redirect(new URL("/preview/checkout", req.url), 307);
+  if (!snap) {
+    const res = NextResponse.redirect(new URL("/preview/checkout", req.url), 307);
+    res.headers.set("X-CP-Snapshot", (snapshotFailures.get(host) || "unknown").replace(/[^\x20-\x7e]/g, " ").slice(0, 300));
+    return res;
+  }
 
   const origin = req.nextUrl.origin;
   const name = snap.html.match(/<title>\s*Checkout\s*[-–—]\s*([^<]+?)\s*<\/title>/i)?.[1] ?? null;
