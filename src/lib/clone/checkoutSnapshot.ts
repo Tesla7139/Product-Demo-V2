@@ -46,6 +46,13 @@ async function getBrowser(): Promise<Browser> {
     const puppeteer = (await import("puppeteer-core")).default;
     const serverless = !!(process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME);
     if (serverless) {
+      // @sparticuz/chromium only unpacks its bundled system libraries (libnss3…)
+      // when it recognises a Node 20/22 Lambda; Vercel's newer Node runtimes run on
+      // the same Amazon Linux 2023, so present them as one. Must precede the import.
+      if (!/(20|22)\.x/.test(process.env.AWS_EXECUTION_ENV || "")) {
+        process.env.AWS_EXECUTION_ENV = "AWS_Lambda_nodejs22.x";
+        process.env.AWS_LAMBDA_JS_RUNTIME = "nodejs22.x";
+      }
       const chromium = (await import("@sparticuz/chromium")).default;
       return puppeteer.launch({ args: chromium.args, executablePath: await chromium.executablePath(), headless: true });
     }
