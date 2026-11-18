@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { ChevronDown } from "lucide-react";
 import { DemoImg } from "@/components/sections/demo/DemoImg";
 import { mockStore } from "@/lib/site";
+import type { CheckoutBranding } from "@/lib/clone/checkoutBranding";
 
 // Pieces shared by the pages that follow the storefront copy (checkout, upsell,
 // thank-you). Everything reads the store's look from the session the copy wrote.
@@ -16,6 +17,8 @@ export type Brand = {
   currency?: string;
   accent?: string | null;
   fonts?: { css: string; body: string; heading: string | null };
+  /** the store's real checkout design, read from its own checkout (null: not available) */
+  checkout?: CheckoutBranding | null;
 };
 
 /** A line in the order — cart items from the copy, plus accepted upsells. */
@@ -51,6 +54,11 @@ export function money(n: number, currency: string) {
 
 /** Text colour that reads on a filled accent button. */
 export function textOn(color: string) {
+  // Shopify's checkout branding comes as hsl(h, s%, l%)
+  const hsl = color.match(/hsl\(\s*[\d.]+,\s*[\d.]+%,\s*([\d.]+)%/i);
+  if (hsl) return Number(hsl[1]) > 62 ? "#111" : "#fff";
+  const short = color.match(/^#([0-9a-f])([0-9a-f])([0-9a-f])$/i);
+  if (short) color = `#${short[1]}${short[1]}${short[2]}${short[2]}${short[3]}${short[3]}`;
   const rgb =
     color.match(/(\d+),\s*(\d+),\s*(\d+)/)?.slice(1).map(Number) ??
     color.match(/^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i)?.slice(1).map((h) => parseInt(h, 16));
@@ -121,20 +129,54 @@ export async function loadCatalog(host: string): Promise<CatalogProduct[]> {
   return mockStore.products.map(fromSimple);
 }
 
-/** Store fonts + the heading face as a CSS variable, applied by <StoreFrame>. */
+/** Shopify checkout's default type stack — what a store gets when it hasn't picked a checkout font. */
+const SHOPIFY_FONTS = '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif';
+
+/**
+ * The order flow's look. With the store's real checkout design (brand.checkout)
+ * the pages use its fonts, colours and corner radius — as CSS variables the
+ * components read — like the store's own checkout; otherwise the storefront's
+ * fonts and add-to-cart colour stand in.
+ */
 export function StoreFrame({ brand, children }: { brand: Brand; children: React.ReactNode }) {
   const f = brand.fonts;
+  const co = brand.checkout;
+  const button = co?.button || brand.accent || "#111827";
+  const body = co ? (co.font ? `"${co.font}", ${SHOPIFY_FONTS}` : SHOPIFY_FONTS) : f?.body;
+  const heading = co ? (co.headingFont ? `"${co.headingFont}", ${SHOPIFY_FONTS}` : body) : f?.heading || f?.body;
+  const vars: Record<string, string | number | undefined> = {
+    "--cp-heading": heading || "inherit",
+    "--co-button": button,
+    "--co-button-text": textOn(button),
+    "--co-accent": co?.accent || button,
+    "--co-main-bg": co?.mainBg || "#ffffff",
+    "--co-summary-bg": co?.summaryBg || "#f5f5f5",
+    "--co-r-btn": `${co?.radius.button ?? 12}px`,
+    "--co-r-ctl": `${co?.radius.control ?? 12}px`,
+    "--co-bold": co?.boldWeight ?? 600,
+  };
   return (
-    <div
-      className="cp-store min-h-screen bg-white text-[#1a1a1a] antialiased"
-      style={{ fontFamily: f?.body || undefined, ["--cp-heading" as string]: f?.heading || f?.body || "inherit" }}
-    >
-      {f?.css && <style dangerouslySetInnerHTML={{ __html: f.css }} />}
-      <style>{`.cp-store .cp-heading{font-family:var(--cp-heading)}${MOTION_CSS}`}</style>
+    <div className="cp-store min-h-screen text-black antialiased" style={{ fontFamily: body || undefined, background: "var(--co-main-bg)", ...vars }}>
+      {!co && f?.css && <style dangerouslySetInnerHTML={{ __html: f.css }} />}
+      {co?.fontFaces && <style dangerouslySetInnerHTML={{ __html: co.fontFaces }} />}
+      <style>{`.cp-store .cp-heading{font-family:var(--cp-heading)}${FIELD_CSS}${MOTION_CSS}`}</style>
       {children}
     </div>
   );
 }
+
+// Shopify checkout fields: a 49px box whose label sits inside as a placeholder
+// when empty and floats to the top-left once there's a value (or on focus).
+const FIELD_CSS = `
+.cp-store .cp-bold{font-weight:var(--co-bold)}
+.cp-store .cp-field{position:relative;display:block;height:49px;border:1px solid #dedede;border-radius:var(--co-r-ctl);background:#fff;transition:border-color .15s,box-shadow .15s}
+.cp-store .cp-field:focus-within{border-color:var(--co-accent);box-shadow:0 0 0 1px var(--co-accent)}
+.cp-store .cp-field.cp-invalid{border-color:#dd1d1d;box-shadow:0 0 0 1px #dd1d1d}
+.cp-store .cp-field input,.cp-store .cp-field select{position:absolute;inset:0;width:100%;height:100%;border:0;background:transparent;padding:18px 11px 0;font-size:14px;line-height:1.35;outline:none;border-radius:inherit;appearance:none;color:#000}
+.cp-store .cp-field>span{position:absolute;left:11px;top:7px;font-size:12px;line-height:1.2;color:#707070;pointer-events:none;transition:all .15s ease}
+.cp-store .cp-field input:placeholder-shown:not(:focus){padding-top:0}
+.cp-store .cp-field input:placeholder-shown:not(:focus)~span{top:50%;transform:translateY(-50%);font-size:14px}
+`;
 
 // Page motion for the order flow: sections rise in one after another (cp-rise with
 // a per-section animationDelay), and confirmation checks draw themselves.
@@ -182,26 +224,66 @@ export function StoreLogo({ brand, className }: { brand: Brand; className?: stri
   );
 }
 
+/**
+ * The checkout header as the store set it up: logo at its configured width, left
+ * or centred, over a banner image or colour (measured: 92px tall, 120px with a
+ * banner, spanning the same 980px as the columns below). `right` (the cart icon)
+ * inherits the header's text colour.
+ */
 export function StoreHeader({ brand, right }: { brand: Brand; right?: React.ReactNode }) {
+  const co = brand.checkout;
+  const name = brand.name || brand.host || "";
+  const logo = co?.logo?.url || brand.logo;
+  const banner = co?.headerBanner;
+  const bg = co?.headerBg || "#fff";
+  const onDark = !!banner || textOn(bg) === "#fff";
+  const center = co?.headerAlign === "center";
   return (
-    <header className="border-b border-neutral-200 bg-white">
-      <div className="mx-auto flex h-16 max-w-[1100px] items-center justify-between px-5 lg:h-20">
-        <StoreLogo brand={brand} />
-        {right}
+    <header
+      className="border-b border-[#dedede]"
+      style={{
+        background: banner ? `#000 url("${banner}") center / cover no-repeat` : bg,
+        color: co?.headerText || (onDark ? "#fff" : "var(--co-accent)"),
+      }}
+    >
+      <div
+        className={`relative mx-auto flex max-w-[980px] items-center px-5 lg:px-0 ${center ? "justify-center" : "justify-between"}`}
+        style={{ minHeight: banner ? 120 : 92 }}
+      >
+        <a href={brand.home || "#"} className="inline-flex min-w-0 items-center">
+          {logo ? (
+            // eslint-disable-next-line @next/next/no-img-element -- the store's own logo
+            <img
+              src={logo}
+              alt={name}
+              style={{ width: co?.logo?.maxWidth ?? 160, maxWidth: "55vw", maxHeight: 72 }}
+              className="h-auto object-contain"
+              referrerPolicy="no-referrer"
+            />
+          ) : (
+            <span className="cp-heading cp-bold truncate text-xl">{name}</span>
+          )}
+        </a>
+        {right && <div className={center ? "absolute right-5 lg:right-0" : ""}>{right}</div>}
       </div>
     </header>
   );
 }
 
-/** Two-column Shopify layout: content on white, order summary on grey (stacked on mobile). */
+/**
+ * Shopify's two-column checkout, to the measured proportions: a 500px form
+ * column and a 400px summary column, 40px either side of the divide, which sits
+ * 50px right of centre; the summary panel takes the store's summary colour.
+ * (Stacked on mobile.)
+ */
 export function SplitLayout({ main, side }: { main: React.ReactNode; side: React.ReactNode }) {
   return (
-    <div className="lg:flex lg:min-h-[calc(100vh-5rem)]">
-      <div className="flex flex-1 justify-end">
-        <div className="w-full max-w-[600px] px-5 py-7 lg:py-10 lg:pr-12">{main}</div>
+    <div className="lg:flex lg:min-h-[calc(100vh-93px)]">
+      <div className="flex justify-end lg:w-[calc(50%+50px)] lg:shrink-0">
+        <div className="w-full px-5 py-7 lg:max-w-[540px] lg:py-10 lg:pl-0 lg:pr-10">{main}</div>
       </div>
-      <aside className="hidden flex-1 border-l border-neutral-200 bg-[#f5f5f5] lg:block">
-        <div className="sticky top-0 max-w-[480px] px-10 py-10">{side}</div>
+      <aside className="hidden flex-1 lg:block" style={{ background: "var(--co-summary-bg)" }}>
+        <div className="sticky top-0 max-w-[440px] py-10 pl-10">{side}</div>
       </aside>
     </div>
   );
@@ -212,22 +294,24 @@ export function OrderSummary({
 }: { lines: Line[]; currency: string; shipping: number; discountBox?: boolean }) {
   const fmt = (n: number) => money(n, currency);
   const subtotal = lines.reduce((s, l) => s + l.price * l.qty, 0);
+  // Shopify's summary column: 64px thumbnails with a quantity badge, 14px text,
+  // a discount field with a muted Apply, and a 19px total with the currency code
   return (
-    <div className="text-[15px]">
+    <div className="text-[14px]">
       <ul className="space-y-4">
         {lines.map((l) => (
-          <li key={l.id} className="flex items-center gap-4">
+          <li key={l.id} className="flex items-center gap-[14px]">
             <div className="relative shrink-0">
-              <DemoImg src={l.image} alt={l.title} className="size-16 rounded-lg border border-neutral-200 bg-white object-cover" />
-              <span className="absolute -right-2 -top-2 flex size-[22px] items-center justify-center rounded-full bg-neutral-900 text-[12px] font-semibold text-white">{l.qty}</span>
+              <DemoImg src={l.image} alt={l.title} className="size-16 rounded-[8px] border border-[#dedede] bg-white object-cover" />
+              <span className="absolute -right-2 -top-2 flex h-[21px] min-w-[21px] items-center justify-center rounded-full bg-black/85 px-1.5 text-[12px] font-semibold text-white">{l.qty}</span>
             </div>
             <div className="min-w-0 flex-1">
-              <div className="leading-snug">{l.title}</div>
-              {l.variant && <div className="text-[13px] text-neutral-500">{l.variant}</div>}
+              <div className="leading-[1.35]">{l.title}</div>
+              {l.variant && <div className="mt-0.5 text-[12px] text-[#707070]">{l.variant}</div>}
             </div>
             <div className="text-right">
               {l.compareAt && l.compareAt > l.price && (
-                <div className="text-[13px] text-neutral-400 line-through">{fmt(l.compareAt * l.qty)}</div>
+                <div className="text-[12px] text-[#707070] line-through">{fmt(l.compareAt * l.qty)}</div>
               )}
               {fmt(l.price * l.qty)}
             </div>
@@ -236,16 +320,25 @@ export function OrderSummary({
       </ul>
       {discountBox && (
         <div className="mt-6 flex gap-3">
-          <input placeholder="Discount code or gift card" className="h-12 flex-1 rounded-md border border-neutral-300 bg-white px-3.5 text-sm outline-none focus:border-neutral-500" />
-          <button type="button" className="h-12 rounded-md border border-neutral-300 bg-neutral-100 px-5 text-sm font-semibold text-neutral-500">Apply</button>
+          <label className="cp-field flex-1">
+            <input placeholder=" " />
+            <span>Discount code or gift card</span>
+          </label>
+          <button
+            type="button"
+            className="cp-bold h-[49px] border border-[#dedede] bg-[#f5f5f5] px-[18px] text-[14px] text-[#707070]"
+            style={{ borderRadius: "var(--co-r-ctl)" }}
+          >
+            Apply
+          </button>
         </div>
       )}
-      <div className="mt-6 space-y-2.5">
+      <div className="mt-6 space-y-2">
         <div className="flex justify-between"><span>Subtotal</span><span>{fmt(subtotal)}</span></div>
         <div className="flex justify-between"><span>Shipping</span><span>{shipping ? fmt(shipping) : "Free"}</span></div>
-        <div className="flex items-baseline justify-between pt-2 text-[21px] font-bold">
+        <div className="cp-bold flex items-baseline justify-between pt-2.5 text-[19px]">
           <span>Total</span>
-          <span><span className="mr-2 text-xs font-normal text-neutral-500">{currency}</span>{fmt(subtotal + shipping)}</span>
+          <span><span className="mr-2 text-[12px] font-normal text-[#707070]">{currency}</span>{fmt(subtotal + shipping)}</span>
         </div>
       </div>
     </div>
@@ -255,34 +348,38 @@ export function OrderSummary({
 export function Field({
   label, value, defaultValue, onChange, type = "text", icon, error,
 }: { label: string; value?: string; defaultValue?: string; onChange?: (v: string) => void; type?: string; icon?: React.ReactNode; error?: string }) {
+  // Shopify's floating-label field (see FIELD_CSS): the label is the placeholder
+  // while empty and moves up once there's a value
   return (
     <div>
-      <label className={`relative block rounded-lg border bg-white px-3.5 pb-2 pt-6 ${error ? "border-red-600" : "border-neutral-300 focus-within:border-neutral-600"}`}>
-        <span className="pointer-events-none absolute left-3.5 top-2 text-[12px] text-neutral-500">{label}</span>
+      <label className={`cp-field ${error ? "cp-invalid" : ""}`}>
         <input
           type={type}
           value={value}
           defaultValue={value === undefined ? defaultValue : undefined}
           onChange={onChange ? (e) => onChange(e.target.value) : undefined}
-          className="w-full bg-transparent text-[15px] outline-none"
+          placeholder=" "
+          style={icon ? { paddingRight: 40 } : undefined}
         />
-        {icon && <span className="absolute right-3.5 top-1/2 -translate-y-1/2">{icon}</span>}
+        <span>{label}</span>
+        {icon && <i className="absolute right-[11px] top-1/2 -translate-y-1/2 not-italic text-[#707070]">{icon}</i>}
       </label>
-      {error && <p className="mt-1.5 text-[14px] text-red-600">{error}</p>}
+      {error && <p className="mt-1.5 text-[13px] text-[#dd1d1d]">{error}</p>}
     </div>
   );
 }
 
-export function Checkbox({ label, accent, checked, onChange }: { label: string; accent: string; checked?: boolean; onChange?: (v: boolean) => void }) {
+/** Shopify's checkbox: 18px, filled with the store's accent when ticked. */
+export function Checkbox({ label, accent, checked, onChange }: { label: string; accent?: string; checked?: boolean; onChange?: (v: boolean) => void }) {
   return (
-    <label className="flex items-center gap-2.5 text-[15px]">
+    <label className="flex items-center gap-2.5 text-[14px]">
       <input
         type="checkbox"
         checked={checked}
         defaultChecked={checked === undefined ? true : undefined}
         onChange={onChange ? (e) => onChange(e.target.checked) : undefined}
-        className="size-[18px]"
-        style={{ accentColor: accent }}
+        className="size-[18px] rounded-[4px]"
+        style={{ accentColor: accent || "var(--co-accent)" }}
       />
       {label}
     </label>
@@ -327,4 +424,19 @@ export function useToast() {
     return () => window.clearTimeout(t);
   }, [message]);
   return [message, setMessage] as const;
+}
+
+/** The store's real checkout design (see /api/clone-checkout); null when unavailable or slow. */
+export async function loadCheckoutDesign(host: string): Promise<CheckoutBranding | null> {
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), 8000);
+  try {
+    const res = await fetch(`/api/clone-checkout?host=${encodeURIComponent(host)}`, { signal: controller.signal });
+    if (!res.ok) return null;
+    return ((await res.json()) as { branding?: CheckoutBranding | null }).branding ?? null;
+  } catch {
+    return null;
+  } finally {
+    window.clearTimeout(timer);
+  }
 }

@@ -81,7 +81,21 @@
   function bare(h) { return String(h).toLowerCase().replace(/^www\./, ""); }
   function isHttp(u) { return !!u && (u.protocol === "https:" || u.protocol === "http:"); }
   function isStore(u) { return isHttp(u) && CFG.hosts.indexOf(bare(u.hostname)) >= 0; }
-  function proxied(u) { return ORIGIN + "/clone/" + u.hostname + u.pathname + u.search + u.hash; }
+  // In the copy, location.pathname is /clone/<host>/<path>. Store scripts that
+  // build URLs from it (e.g. a geo-redirect doing base + location.pathname) end up
+  // with our prefix inside a store URL — peel it off, however deeply it nested.
+  function unwrap(u) {
+    for (var i = 0; i < 20; i++) {
+      var m = u.pathname.match(/^\/clone\/([a-z0-9.-]+\.[a-z]{2,})(\/.*)?$/i);
+      if (!m) return u;
+      u = new URL("https://" + m[1] + (m[2] || "/") + u.search + u.hash);
+    }
+    return u;
+  }
+  function proxied(u) {
+    u = unwrap(u);
+    return ORIGIN + "/clone/" + u.hostname + u.pathname + u.search + u.hash;
+  }
   function storeUrl() { return abs(CFG.base) || abs(document.baseURI); }
   function shopRoot() {
     return (window.Shopify && window.Shopify.routes && window.Shopify.routes.root) || "/";
@@ -733,8 +747,20 @@
     window.navigation.addEventListener("navigate", function (e) {
       var u;
       try { u = new URL(e.destination.url); } catch { return; }
-      if (!isHttp(u) || u.origin === ORIGIN || !e.cancelable) return;
+      if (!isHttp(u) || !e.cancelable) return;
+      if (u.origin === ORIGIN) {
+        // already inside the copy — unless a leaked prefix nested /clone/ in /clone/
+        if (!/^\/clone\/[^/]+\/clone\//i.test(u.pathname)) return;
+        e.preventDefault();
+        var fixed = unwrap(u);
+        setTimeout(function () { routeStoreNav(fixed); }, 0);
+        return;
+      }
       e.preventDefault();
+      u = unwrap(u);
+      // A script sending the page to itself (geo-redirects, "refresh to apply
+      // region") would only reload it — and run again, in a loop. Clicks still go.
+      if (!e.userInitiated && samePage(u)) return;
       if (!isStore(u)) {
         // a real link to another site opens in a new tab; script redirects are dropped
         if (e.userInitiated) window.open(u.href, "_blank", "noopener");

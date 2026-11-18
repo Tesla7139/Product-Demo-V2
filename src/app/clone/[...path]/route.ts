@@ -29,8 +29,16 @@ async function resolve(req: NextRequest, ctx: Ctx) {
   if (!host || isBlockedHost(host)) return null;
   // keep the original percent-encoding of the rest of the path
   const prefix = `/clone/${path[0]}`;
-  const rest = req.nextUrl.pathname.slice(prefix.length) || "/";
-  return { host, target: `https://${host}${rest}${req.nextUrl.search}` };
+  let rest = req.nextUrl.pathname.slice(prefix.length) || "/";
+  // a store script that built a URL from the copy's own path nests /clone/<host>/
+  // inside it (see unwrap in clone-runtime.js) — the innermost one is the real page
+  let inner = host;
+  for (let m = rest.match(/^\/clone\/([^/]+)(\/.*)?$/); m; m = rest.match(/^\/clone\/([^/]+)(\/.*)?$/)) {
+    inner = decodeURIComponent(m[1]).toLowerCase();
+    rest = m[2] || "/";
+  }
+  if (inner !== host && isBlockedHost(inner)) return null;
+  return { host: inner, target: `https://${inner}${rest}${req.nextUrl.search}` };
 }
 
 function isPageLoad(req: NextRequest) {

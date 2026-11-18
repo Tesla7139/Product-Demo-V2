@@ -49,7 +49,7 @@ function isChallenge(text: string): boolean {
 
 const isHtml = (ct: string) => /text\/html/i.test(ct);
 
-async function nodeFetch(
+export async function nodeFetch(
   url: string,
   init: { method: string; accept: string; cookie?: string; body?: string; contentType?: string; manual?: boolean }
 ): Promise<Upstream | null> {

@@ -2,6 +2,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { getUpstream, isBlockedHost } from "@/lib/clone/upstream";
 import { englishAlternate } from "@/lib/clone/locale";
 import { cachedUpstream, cacheKey, DATA_TTL, PAGE_TTL } from "@/lib/clone/cache";
+import { checkoutSnapshot } from "@/lib/clone/checkoutSnapshot";
 
 export const runtime = "nodejs";
 export const maxDuration = 30;
@@ -13,12 +14,13 @@ export const maxDuration = 30;
 // from the store's English site when it has one.
 
 type ShopifyProduct = {
+  id?: number;
   handle: string;
   title?: string;
   product_type?: string;
   tags?: string[];
-  images?: unknown[];
-  variants?: { available?: boolean; price?: string }[];
+  images?: { src?: string }[];
+  variants?: { id?: number; title?: string; available?: boolean; price?: string }[];
 };
 
 // Products whose page isn't a plain "Add to cart": bundle builders ("choose your
@@ -31,7 +33,9 @@ const isSimple = (p: ShopifyProduct) =>
 
 const isBuyable = (p: ShopifyProduct) =>
   !!p.images?.length && !!p.variants?.some((v) => v.available !== false && Number(v.price) > 0);
-type Start = { host: string; path: string | null };
+/** The product the preview opens checkout with, for the session cart. */
+type StartLine = { id: string; title: string; variant: string; price: number; qty: number; image: string | null };
+type Start = { host: string; path: string | null; line: StartLine | null };
 
 // lookups by host, held as promises so a warm-up and the real request share one
 const starts = new Map<string, { at: number; data: Promise<Start> }>();
@@ -42,14 +46,26 @@ const TTL = 10 * 60 * 1000;
  * photo, else any in stock with a photo, else the first. Null without a readable
  * Shopify catalog.
  */
-async function productPath(site: string): Promise<string | null> {
+async function productPick(site: string): Promise<{ path: string; line: StartLine } | null> {
   const up = await catalog(site);
   if (!up || up.status >= 400) return null;
   try {
     const { products } = JSON.parse(up.body.toString("utf8")) as { products?: ShopifyProduct[] };
     const pick =
       products?.find((p) => isBuyable(p) && isSimple(p)) ?? products?.find(isBuyable) ?? products?.[0];
-    return pick ? `/products/${encodeURIComponent(pick.handle)}` : null;
+    if (!pick) return null;
+    const v = pick.variants?.find((x) => x.available !== false && Number(x.price) > 0) ?? pick.variants?.[0];
+    return {
+      path: `/products/${encodeURIComponent(pick.handle)}`,
+      line: {
+        id: String(v?.id ?? pick.id ?? pick.handle),
+        title: pick.title ?? pick.handle,
+        variant: v?.title && v.title !== "Default Title" ? v.title : "",
+        price: Number(v?.price) || 0,
+        qty: 1,
+        image: pick.images?.[0]?.src ?? null,
+      },
+    };
   } catch {
     return null; // a password page or a non-Shopify site
   }
@@ -76,17 +92,12 @@ async function findStart(host: string): Promise<Start> {
   if (home && home.status < 400 && /text\/html/i.test(home.contentType)) {
     site = new URL(englishAlternate(home.body.toString("utf8"), home.finalUrl) ?? home.finalUrl).hostname;
   }
-  const path = await productPath(site);
+  const pick = await productPick(site);
 
-  // Fetch the page the preview is about to open now, without waiting: by the
-  // time the frame asks the proxy for it, it's cached or already on its way.
-  if (path) {
-    const pageUrl = `https://${site}${path}`;
-    void cachedUpstream(cacheKey("page", pageUrl), PAGE_TTL, () =>
-      getUpstream(pageUrl, { accept: "text/html,application/xhtml+xml", page: true })
-    );
-  }
-  return { host: site, path };
+  // Start capturing the store's real checkout with that product now, without
+  // waiting: by the time the preview asks for it, it's cached or on its way.
+  void checkoutSnapshot(site, pick ? decodeURIComponent(pick.path.slice("/products/".length)) : null);
+  return { host: site, path: pick?.path ?? null, line: pick?.line ?? null };
 }
 
 // GET ?host=…&warm=1 is the same lookup, fired by the URL field while it's being

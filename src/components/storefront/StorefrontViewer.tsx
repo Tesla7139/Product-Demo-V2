@@ -2,10 +2,9 @@
 
 import { useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { Globe, Monitor, Smartphone, X } from "lucide-react";
+import { Globe, X } from "lucide-react";
 import { LoadingView } from "@/components/sections/demo/DemoExperience";
 
-type Device = "desktop" | "mobile";
 /**
  * loading: the "Building <store>" screen while the store loads · intro: the
  * laptop welcome · entering: zooming into its screen · site: the store
@@ -33,21 +32,24 @@ function pathOf(url: string): string {
 
 const START_LOOKUP_MS = 8000;
 
+type StartLine = { id: string; title: string; variant: string; price: number; qty: number; image: string | null };
+type Start = { host: string; path: string | null; line: StartLine | null };
+
 /**
- * Where to open the store: one of its product pages (on its English site when it
- * has one), so the demo goes straight to add-to-cart and checkout — see
- * /api/clone-start. Path is null when there's no readable catalog.
+ * The store site and product the preview's checkout opens with (on the store's
+ * English site when it has one) — see /api/clone-start, which also starts
+ * capturing the store's real checkout. Path/line are null without a readable catalog.
  */
-async function startPage(host: string): Promise<{ host: string; path: string | null }> {
+async function startPage(host: string): Promise<Start> {
   const controller = new AbortController();
   const timer = window.setTimeout(() => controller.abort(), START_LOOKUP_MS);
   try {
     const res = await fetch(`/api/clone-start?host=${encodeURIComponent(host)}`, { signal: controller.signal });
-    if (!res.ok) return { host, path: null };
-    const data = (await res.json()) as { host?: string; path?: string | null };
-    return { host: data.host || host, path: data.path ?? null };
+    if (!res.ok) return { host, path: null, line: null };
+    const data = (await res.json()) as Partial<Start>;
+    return { host: data.host || host, path: data.path ?? null, line: data.line ?? null };
   } catch {
-    return { host, path: null }; // too slow — open the homepage
+    return { host, path: null, line: null }; // too slow — the checkout capture picks a product itself
   } finally {
     window.clearTimeout(timer);
   }
@@ -60,12 +62,11 @@ function nameFromHost(host: string) {
 }
 
 // Full-screen copy of the store: the store's own site in a frame, with only a
-// close button and a desktop / mobile switch around it. The frame is the same
+// close button above it. The frame is the same
 // element in both modes, so switching keeps the page, scroll position and cart.
 // While the first page loads, a laptop shows the store; once the page is ready
 // the laptop's screen zooms up to fill the view and hands over to the site.
 export function StorefrontViewer({ url, onClose }: { url: string | null; onClose: () => void }) {
-  const [device, setDevice] = useState<Device>("desktop");
   const [src, setSrc] = useState<string | null>(null);
   const [phase, setPhase] = useState<Phase>("loading");
   const [loadingDone, setLoadingDone] = useState(false); // loading screen shows its green "ready" state
@@ -76,17 +77,17 @@ export function StorefrontViewer({ url, onClose }: { url: string | null; onClose
   const host = url ? hostOf(url) : "";
   const startPath = url ? pathOf(url) : "";
 
-  // A new store starts with an empty cart; clear the session before the frame mounts.
-  // A pasted page URL opens as-is; a bare domain opens on one of its products
-  // (looked up while the laptop intro plays), or the homepage if there's no catalog.
+  // The preview opens straight on the store's own checkout (captured — see
+  // /preview/store-checkout) with one of its products in the cart: the product
+  // in a pasted product URL, else the one /api/clone-start picks. A new store
+  // starts with a fresh session before the frame mounts.
   useEffect(() => {
     if (!host) return;
     try {
       sessionStorage.removeItem("cp-cart");
       sessionStorage.removeItem("cp-brand");
-      sessionStorage.removeItem("cp-open-product");
     } catch {
-      /* storage blocked — the copy still works, the cart just won't persist */
+      /* storage blocked — the checkout still opens, the order flow just starts empty */
     }
     openedAt.current = Date.now();
     /* eslint-disable react-hooks/set-state-in-effect -- frame src + intro follow the session reset above */
@@ -97,13 +98,18 @@ export function StorefrontViewer({ url, onClose }: { url: string | null; onClose
     setSrc(null);
     /* eslint-enable react-hooks/set-state-in-effect */
     let cancelled = false;
-    (startPath ? Promise.resolve({ host, path: startPath }) : startPage(host)).then((start) => {
+    const pasted: Start = { host, path: startPath || null, line: null };
+    (/^\/products\//.test(startPath) ? Promise.resolve(pasted) : startPage(host)).then((start) => {
       if (cancelled) return;
-      // no catalog to pick from: open the homepage and let the runtime follow its first product link
-      if (start.path === null) {
-        try { sessionStorage.setItem("cp-open-product", "1"); } catch { /* stays on the homepage */ }
+      // the session the order flow reads; the captured checkout refines it (price, currency, name)
+      try {
+        if (start.line) sessionStorage.setItem("cp-cart", JSON.stringify({ items: [start.line] }));
+        sessionStorage.setItem("cp-brand", JSON.stringify({ host: start.host, home: `${window.location.origin}/clone/${start.host}` }));
+      } catch {
+        /* storage blocked */
       }
-      setSrc(`/clone/${start.host}${start.path ?? ""}`);
+      const handle = start.path?.match(/^\/products\/([^/?#]+)/)?.[1];
+      setSrc(`/preview/store-checkout?host=${encodeURIComponent(start.host)}${handle ? `&handle=${handle}` : ""}`);
     });
     return () => { cancelled = true; };
   }, [host, startPath]);
@@ -155,8 +161,6 @@ export function StorefrontViewer({ url, onClose }: { url: string | null; onClose
     };
   }, [url, onClose]);
 
-  const mobile = device === "mobile";
-
   return (
     <AnimatePresence>
       {url && (
@@ -167,15 +171,6 @@ export function StorefrontViewer({ url, onClose }: { url: string | null; onClose
           className="fixed inset-0 z-[100] flex flex-col bg-white"
         >
           <div className="relative flex h-12 shrink-0 items-center justify-center border-b border-neutral-200 bg-white px-3">
-            <div className="hidden items-center gap-0.5 rounded-lg bg-neutral-100 p-0.5 sm:flex" role="group" aria-label="Preview size">
-              <DeviceButton active={!mobile} onClick={() => setDevice("desktop")} label="Desktop">
-                <Monitor className="size-4" />
-              </DeviceButton>
-              {/* mobile preview is switched off for now */}
-              <DeviceButton active={mobile} onClick={() => setDevice("mobile")} label="Mobile" disabled>
-                <Smartphone className="size-4" />
-              </DeviceButton>
-            </div>
             <button
               onClick={onClose}
               aria-label="Close"
@@ -185,11 +180,8 @@ export function StorefrontViewer({ url, onClose }: { url: string | null; onClose
             </button>
           </div>
 
-          <div className={`relative min-h-0 flex-1 ${mobile ? "flex items-center justify-center bg-neutral-100 p-5" : ""}`}>
-            <div
-              className={`relative ${mobile ? "overflow-hidden rounded-[44px] border-[10px] bg-white shadow-2xl" : "h-full w-full"}`}
-              style={mobile ? { width: 410, height: "min(864px, 100%)", borderColor: "#111" } : undefined}
-            >
+          <div className="relative min-h-0 flex-1">
+            <div className="relative h-full w-full">
               {src && (
                 <iframe
                   key={src}
@@ -232,23 +224,6 @@ export function StorefrontViewer({ url, onClose }: { url: string | null; onClose
         </motion.div>
       )}
     </AnimatePresence>
-  );
-}
-
-function DeviceButton({ active, onClick, label, disabled, children }: { active: boolean; onClick: () => void; label: string; disabled?: boolean; children: React.ReactNode }) {
-  return (
-    <button
-      onClick={onClick}
-      aria-pressed={active}
-      disabled={disabled}
-      title={disabled ? `${label} view coming soon` : undefined}
-      className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-[13px] font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
-        active ? "bg-white text-neutral-900 shadow-sm" : "text-neutral-500 enabled:hover:text-neutral-800"
-      }`}
-    >
-      {children}
-      {label}
-    </button>
   );
 }
 
