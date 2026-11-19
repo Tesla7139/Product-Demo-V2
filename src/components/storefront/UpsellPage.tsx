@@ -1,248 +1,363 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
-import { ArrowLeft, ArrowRight, Check, Loader2 } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { ChevronDown, ChevronLeft, ChevronRight } from "lucide-react";
 import { DemoImg } from "@/components/sections/demo/DemoImg";
-import { AnimatedCheck, money, StoreLogo, textOn, type Brand, type CatalogProduct, type Line } from "./shared";
+import { AnimatedCheck, money, type Brand, type CatalogProduct, type Line } from "./shared";
 
-// Post-purchase offers shown right after payment: one product at a time, a
-// limited-time discount, the product's real options, Pay now / Decline.
+// Post-purchase offers, as Shopify stores run them after payment: a
+// confirmation strip ("You've paid for your order."), then a "One-time offer!"
+// page — one featured product and a row of more — with a five-minute countdown,
+// and after a decline a "Last offer:" page. Every product has its own quantity
+// and Pay now; declining asks once more before moving on.
 
-const DISCOUNTS = [20, 25, 25];
+const PCT = 20;
 const OFFER_SECONDS = 5 * 60;
+const SWITCH_MS = 900; // the spinner between pages
+const PAY_MS = 1300;
+
+type OfferPage = { kind: "first" | "last"; featured: CatalogProduct | null; grid: CatalogProduct[] };
+
+function buildPages(offers: CatalogProduct[]): OfferPage[] {
+  if (!offers.length) return [];
+  const [featured, ...rest] = offers;
+  const pages: OfferPage[] = [{ kind: "first", featured, grid: rest.slice(0, 4) }];
+  const last = rest.slice(4, 6).length >= 2 ? rest.slice(4, 6) : rest.slice(0, 2);
+  if (last.length) pages.push({ kind: "last", featured: null, grid: last });
+  return pages;
+}
 
 export function UpsellPage({
-  brand, offers, orderNo, accent, currency, onDone,
+  offers, orderNo, accent, currency, onDone,
 }: {
   brand: Brand;
   offers: CatalogProduct[];
   orderNo: string;
   accent: string;
   currency: string;
-  /** called after the last offer, with the offers the shopper paid for */
+  /** called after the last offer page, with the offers the shopper paid for */
   onDone: (accepted: Line[]) => void;
 }) {
+  const pages = useMemo(() => buildPages(offers), [offers]);
   const [idx, setIdx] = useState(0);
-  const [accepted, setAccepted] = useState<Line[]>([]);
-  const [secs, setSecs] = useState(OFFER_SECONDS);
+  const [busy, setBusy] = useState(true); // the page "loads" first, as the real one does
+  const accepted = useRef<Line[]>([]);
 
   useEffect(() => {
-    const id = setInterval(() => setSecs((s) => (s > 0 ? s - 1 : 0)), 1000);
-    return () => clearInterval(id);
-  }, []);
-
-  const offer = offers[idx];
-  const pct = DISCOUNTS[idx] ?? 25;
-  const timer = `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, "0")}`;
+    if (!busy) return;
+    const t = window.setTimeout(() => setBusy(false), SWITCH_MS);
+    return () => window.clearTimeout(t);
+  }, [busy]);
 
   const next = (added?: Line) => {
-    const all = added ? [...accepted, added] : accepted;
-    setAccepted(all);
-    if (idx + 1 >= offers.length) onDone(all);
-    else {
-      setIdx(idx + 1);
-      window.scrollTo(0, 0);
+    if (added) accepted.current = [...accepted.current, added];
+    if (idx + 1 >= pages.length) {
+      setBusy(true);
+      window.setTimeout(() => onDone(accepted.current), SWITCH_MS);
+      return;
     }
+    window.scrollTo({ top: 0 });
+    setBusy(true);
+    setIdx(idx + 1);
   };
 
+  const page = pages[idx];
+  const link = "var(--co-accent)";
+
   return (
-    <div>
-      <div className="border-b border-neutral-200">
-        <div className="mx-auto max-w-[1100px] px-5 py-5 lg:px-10">
-          <StoreLogo brand={brand} className="max-h-7 max-w-[150px] object-contain" />
-          <div className="mt-2 flex items-start gap-3">
-            <span className="mt-1"><AnimatedCheck color={accent} size={32} /></span>
-            <div>
-              <div className="text-[15px]">Confirmation #{orderNo}</div>
-              <div className="cp-heading text-[22px] leading-tight">You&apos;ve paid for your order.</div>
-              <button onClick={() => onDone(accepted)} className="mt-0.5 text-[15px] underline underline-offset-2" style={{ color: accent }}>
-                View order confirmation ›
-              </button>
-            </div>
+    <div className="min-h-screen" style={{ background: "var(--co-main-bg)" }}>
+      <div className="border-b border-black/10">
+        <div className="mx-auto flex max-w-[980px] items-start gap-3 px-5 py-5 lg:px-0">
+          <span className="mt-0.5"><AnimatedCheck color={accent} size={26} /></span>
+          <div className="leading-snug">
+            <div className="text-[14px]">Confirmation #{orderNo}</div>
+            <div className="cp-heading cp-bold text-[17px]">You&apos;ve paid for your order.</div>
+            <button onClick={() => onDone(accepted.current)} className="text-[14px] underline underline-offset-2" style={{ color: link }}>
+              View order confirmation ›
+            </button>
           </div>
         </div>
       </div>
 
-      <div className="border-b border-neutral-200 bg-[#f7f7f7] px-5 py-5 text-center">
-        <div key={pct} className="cp-fade text-[17px] font-bold">Just for you · {pct}% off · Ends in {timer}</div>
-        <div className="cp-heading mt-2 text-[16px] text-neutral-700">Add it to your current order. Same box, no extra shipping.</div>
+      <div className="mx-auto max-w-[950px] px-5 pb-16 pt-6">
+        {busy || !page ? (
+          <div className="flex justify-center border-b border-black/10 py-8">
+            <Spinner size={34} />
+          </div>
+        ) : (
+          <OfferPageView key={idx} page={page} currency={currency} onAccept={(l) => next(l)} onDecline={() => next()} />
+        )}
       </div>
-
-      {offer && (
-        <Offer
-          key={offer.id}
-          offer={offer}
-          pct={pct}
-          position={`Offer ${idx + 1} of ${offers.length}`}
-          accent={accent}
-          currency={currency}
-          onAccept={(line) => next(line)}
-          onDecline={() => next()}
-        />
-      )}
     </div>
   );
 }
 
-function Offer({
-  offer, pct, position, accent, currency, onAccept, onDecline,
+function OfferPageView({
+  page, currency, onAccept, onDecline,
 }: {
-  offer: CatalogProduct;
-  pct: number;
-  position: string;
-  accent: string;
+  page: OfferPage;
   currency: string;
   onAccept: (line: Line) => void;
   onDecline: () => void;
 }) {
-  const fmt = (n: number) => money(n, currency);
-  const [picked, setPicked] = useState<string[]>(() => offer.variants[0]?.options ?? []);
-  const [paying, setPaying] = useState<"idle" | "paying" | "done">("idle");
+  const [secs, setSecs] = useState(OFFER_SECONDS);
+  const [paying, setPaying] = useState<string | null>(null);
+  useEffect(() => {
+    const id = window.setInterval(() => setSecs((s) => (s > 0 ? s - 1 : 0)), 1000);
+    return () => window.clearInterval(id);
+  }, []);
+  const timer = `${String(Math.floor(secs / 60)).padStart(2, "0")}:${String(secs % 60).padStart(2, "0")}`;
 
-  const variant = useMemo(
-    () => offer.variants.find((v) => v.options.every((o, i) => o === picked[i])) ?? offer.variants[0],
-    [offer.variants, picked]
-  );
-  const full = variant?.price ?? offer.price;
-  const deal = Math.round(full * (100 - pct)) / 100;
-
-  // gallery: the selected variant's image first, then the rest
-  const images = [...new Set([variant?.image, ...offer.images].filter((src): src is string => !!src))].slice(0, 6);
-  const [shown, setShown] = useState(0);
-  const current = images[Math.min(shown, images.length - 1)] ?? null;
-
-  const pay = () => {
-    if (paying !== "idle") return;
-    setPaying("paying");
-    window.setTimeout(() => setPaying("done"), 1400);
-    window.setTimeout(
-      () =>
-        onAccept({
-          id: `upsell-${variant?.id ?? offer.id}`,
-          title: offer.title,
-          variant: variant && variant.title !== "Default Title" ? variant.title : "",
-          price: deal,
-          compareAt: full,
-          qty: 1,
-          image: variant?.image ?? offer.images[0] ?? null,
-        }),
-      2100
-    );
+  const pay = (key: string, line: Line) => {
+    if (paying) return;
+    setPaying(key);
+    window.setTimeout(() => onAccept(line), PAY_MS);
   };
+  const cardProps = { currency, paying, onPay: pay };
 
   return (
-    <div className="cp-slide mx-auto grid max-w-[1100px] gap-8 px-5 py-8 lg:grid-cols-[minmax(0,1fr)_480px] lg:gap-14 lg:px-10">
-      <div>
-        <div className="flex aspect-square items-center justify-center overflow-hidden bg-[#f2f2f0]">
-          <DemoImg src={current} alt={offer.title} className="size-full object-contain" />
-        </div>
-        {images.length > 1 && (
+    <div className="cp-fade">
+      <div className="border-b border-black/10 pb-6 text-center">
+        {page.kind === "first" ? (
           <>
-            <div className="mt-4 flex items-center justify-end gap-5 text-[17px] font-bold">
-              <button aria-label="Previous image" onClick={() => setShown((shown - 1 + images.length) % images.length)}><ArrowLeft className="size-5" /></button>
-              <span className="tabular-nums">{shown + 1} / {images.length}</span>
-              <button aria-label="Next image" onClick={() => setShown((shown + 1) % images.length)}><ArrowRight className="size-5" /></button>
-            </div>
-            <div className="mt-4 grid grid-cols-4 gap-3">
-              {images.map((src, i) => (
-                <button key={src} onClick={() => setShown(i)} className="pb-2" style={{ borderBottom: `4px solid ${i === shown ? accent : "transparent"}` }}>
-                  <DemoImg src={src} alt="" className="aspect-square w-full bg-[#f2f2f0] object-cover" />
-                </button>
-              ))}
-            </div>
+            <div className="cp-bold text-[17px]">One-time offer!</div>
+            <div className="mt-1 text-[17px]">Get any of these recommended items now at <b className="cp-bold">&nbsp;{PCT}% OFF!</b></div>
+          </>
+        ) : (
+          <>
+            <div className="cp-bold text-[22px]">Last offer:</div>
+            <div className="mt-1 text-[17px]">Get any of these items at <b className="cp-bold">{PCT}% OFF!</b></div>
           </>
         )}
       </div>
 
+      <div className="mt-8 rounded-[3px] border border-[#d5e9f3] bg-[#eaf6fc] py-3.5 text-center text-[17px]">
+        Offer expires in: <span className="tabular-nums text-[#d0021b]">{timer}</span>
+      </div>
+
+      {page.featured && <Featured product={page.featured} onDecline={onDecline} {...cardProps} />}
+
+      {page.grid.length > 0 && (
+        <div className={`mt-8 grid gap-4 ${page.kind === "first" ? "grid-cols-2 md:grid-cols-4" : "grid-cols-2"}`}>
+          {page.grid.map((p) => <Card key={p.id} product={p} large={page.kind === "last"} {...cardProps} />)}
+        </div>
+      )}
+
+      <DeclineButton disabled={!!paying} onDecline={onDecline} className="mt-4 w-full" />
+    </div>
+  );
+}
+
+/* ------------------------------ one product ------------------------------ */
+
+type Pick = ReturnType<typeof usePick>;
+
+/** A product's chosen options and quantity, and the prices that follow. */
+function usePick(product: CatalogProduct) {
+  const [picked, setPicked] = useState<string[]>(() => product.variants[0]?.options ?? []);
+  const [qty, setQty] = useState(1);
+  const variant = product.variants.find((v) => v.options.every((o, i) => o === picked[i])) ?? product.variants[0];
+  const full = variant?.price ?? product.price;
+  const deal = Math.round(full * (100 - PCT)) / 100;
+  const line: Line = {
+    id: `upsell-${variant?.id ?? product.id}`,
+    title: product.title,
+    variant: variant && variant.title !== "Default Title" ? variant.title : "",
+    price: deal,
+    compareAt: full,
+    qty,
+    image: variant?.image ?? product.images[0] ?? null,
+  };
+  return { picked, setPicked, qty, setQty, variant, full, deal, line };
+}
+
+function Featured({
+  product, currency, paying, onPay, onDecline,
+}: { product: CatalogProduct; currency: string; paying: string | null; onPay: (key: string, line: Line) => void; onDecline: () => void }) {
+  const pick = usePick(product);
+  const fmt = (n: number) => money(n, currency);
+  const images = [...new Set([pick.variant?.image, ...product.images].filter((s): s is string => !!s))].slice(0, 6);
+  const [shown, setShown] = useState(0);
+  const current = images[Math.min(shown, images.length - 1)] ?? null;
+  const key = `f-${product.id}`;
+
+  return (
+    <div className="mt-8 grid gap-8 md:grid-cols-2">
       <div>
-        <div className="text-[15px] text-neutral-500">{position}</div>
-        <h1 className="cp-heading mt-2 text-[32px] leading-[1.15] lg:text-[40px]">{offer.title}</h1>
-        <div className="mt-3 flex flex-wrap items-baseline gap-x-2 text-[22px] font-bold lg:text-[26px]">
-          <span>{fmt(deal)}</span>
-          <span className="text-[20px] font-normal text-neutral-400 line-through">{fmt(full)}</span>
-          <span className="text-[20px] text-[#1f8a4c]">· Save {pct}%</span>
+        <div className="mx-auto aspect-square max-w-[340px] overflow-hidden rounded-[4px] border border-black/10 bg-white">
+          <DemoImg src={current} alt={product.title} className="size-full object-contain" />
         </div>
-        {offer.description && <p className="mt-4 text-[15px] leading-relaxed text-neutral-500">{offer.description}</p>}
+        {images.length > 1 && (
+          <div className="mx-auto mt-4 flex max-w-[340px] items-center gap-2">
+            <button aria-label="Previous image" onClick={() => setShown((shown - 1 + images.length) % images.length)} className="text-neutral-500">
+              <ChevronLeft className="size-4" />
+            </button>
+            <div className="grid flex-1 grid-cols-3 gap-2">
+              {[0, 1, 2].map((o) => {
+                const i = (shown - 1 + o + images.length) % images.length;
+                return (
+                  <button key={o} onClick={() => setShown(i)} className={`aspect-square overflow-hidden rounded-[3px] ${i === shown ? "border border-black/15 bg-white p-1" : ""}`}>
+                    <DemoImg src={images[i]} alt="" className="size-full object-cover" />
+                  </button>
+                );
+              })}
+            </div>
+            <button aria-label="Next image" onClick={() => setShown((shown + 1) % images.length)} className="text-neutral-500">
+              <ChevronRight className="size-4" />
+            </button>
+          </div>
+        )}
+      </div>
 
-        {offer.options.map((opt, oi) => (
-          <OptionPicker
-            key={opt.name}
-            name={opt.name}
-            values={opt.values}
-            value={picked[oi]}
-            accent={accent}
-            onPick={(v) => { setPicked((p) => p.map((x, i) => (i === oi ? v : x))); setShown(0); }}
-          />
-        ))}
-
-        <div className="mt-6 space-y-3 border-t border-neutral-200 pt-5 text-[15px]">
-          <div className="flex justify-between"><span>Subtotal</span><span className="font-bold">{fmt(deal)}</span></div>
-          <div className="flex justify-between"><span>Shipping</span><span className="font-bold">Free</span></div>
-          <div className="flex justify-between"><span>Taxes</span><span className="font-bold">Free</span></div>
-          <div className="flex justify-between border-t border-neutral-200 pt-4"><span>Total</span><span className="font-bold">{fmt(deal)}</span></div>
+      <div className="text-[15px]">
+        <h2 className="text-[17px]">{product.title}</h2>
+        <Price full={pick.full} deal={pick.deal} fmt={fmt} />
+        <Options product={product} pick={pick} />
+        <QtyField pick={pick} />
+        <div className="mt-4 space-y-1.5">
+          <Row label="Subtotal" value={fmt(pick.full * pick.qty)} />
+          <Row label="Discount" value={`-${fmt((pick.full - pick.deal) * pick.qty)}`} valueClass="text-[#1f8a4c]" />
+          <Row label="Shipping" value="Free" />
         </div>
-
-        <button
-          onClick={pay}
-          disabled={paying !== "idle"}
-          className="mt-6 flex h-[60px] w-full items-center justify-center gap-2 rounded-lg text-[18px] font-bold transition-[filter] hover:brightness-110"
-          style={{ background: accent, color: textOn(accent) }}
-        >
-          {paying === "paying" ? (
-            <><Loader2 className="size-5 animate-spin" /> Processing…</>
-          ) : paying === "done" ? (
-            <><Check className="cp-pop size-5" strokeWidth={3} /> Added to your order</>
-          ) : (
-            <>Pay now · {fmt(deal)} {currency}</>
-          )}
-        </button>
-        <button
-          onClick={onDecline}
-          disabled={paying !== "idle"}
-          className="mt-2 h-[60px] w-full rounded-lg border border-neutral-200 text-[18px] font-bold transition-colors hover:bg-neutral-50"
-        >
-          Decline this offer
-        </button>
+        <div className="mt-3 border-t border-black/10 pt-3">
+          <Row label="Total" value={fmt(pick.deal * pick.qty)} big />
+        </div>
+        <Description text={product.description} />
+        <PayButton busy={paying === key} disabled={!!paying} label={`Pay now • ${fmt(pick.deal * pick.qty)}`} onClick={() => onPay(key, pick.line)} className="mt-4 h-[52px] w-full" />
+        <DeclineButton disabled={!!paying} onDecline={onDecline} className="mt-2 w-full" />
       </div>
     </div>
   );
 }
 
-function OptionPicker({ name, values, value, accent, onPick }: { name: string; values: string[]; value?: string; accent: string; onPick: (v: string) => void }) {
-  const segmented = values.length <= 3 && !/size/i.test(name);
+function Card({
+  product, large, currency, paying, onPay,
+}: { product: CatalogProduct; large?: boolean; currency: string; paying: string | null; onPay: (key: string, line: Line) => void }) {
+  const pick = usePick(product);
+  const fmt = (n: number) => money(n, currency);
+  const key = `c-${product.id}`;
   return (
-    <div className="mt-6">
-      <div className="text-[15px]">{name}: <span className="font-bold">{value}</span></div>
-      {segmented ? (
-        <div className="mt-2.5 flex rounded-lg bg-neutral-100 p-1">
-          {values.map((v) => (
-            <button
-              key={v}
-              onClick={() => onPick(v)}
-              className={`h-12 flex-1 rounded-md text-[16px] transition-colors ${v === value ? "bg-white font-bold shadow-sm" : "text-neutral-700"}`}
-              style={v === value ? { color: accent } : undefined}
-            >
-              {v}
-            </button>
-          ))}
-        </div>
-      ) : (
-        <div className="mt-2.5 flex flex-wrap gap-2">
-          {values.map((v) => {
-            const on = v === value;
-            return (
-              <button
-                key={v}
-                onClick={() => onPick(v)}
-                className="h-12 min-w-[64px] rounded-lg border px-4 text-[15px] font-bold transition-colors"
-                style={on ? { background: accent, borderColor: accent, color: textOn(accent) } : { borderColor: "#d4d4d4", color: accent }}
-              >
-                {v}
-              </button>
-            );
-          })}
-        </div>
-      )}
+    <div className="flex flex-col text-[14px]">
+      <div className={`overflow-hidden bg-white ${large ? "aspect-[1/0.85]" : "aspect-square"}`}>
+        <DemoImg src={pick.variant?.image ?? product.images[0] ?? null} alt={product.title} className="size-full object-cover" />
+      </div>
+      <div className="mt-3 line-clamp-2 min-h-[2.6em] text-[15px] leading-[1.3]">{product.title}</div>
+      {large && <Description text={product.description} small />}
+      <Price full={pick.full} deal={pick.deal} fmt={fmt} small />
+      <div className="mt-auto">
+        <Options product={product} pick={pick} small />
+        <QtyField pick={pick} small />
+        <PayButton busy={paying === key} disabled={!!paying} label={`Pay now • ${fmt(pick.deal * pick.qty)}`} onClick={() => onPay(key, pick.line)} className="mt-2 h-[48px] w-full text-[13px]" />
+      </div>
     </div>
+  );
+}
+
+/* -------------------------------- pieces -------------------------------- */
+
+function Price({ full, deal, fmt, small }: { full: number; deal: number; fmt: (n: number) => string; small?: boolean }) {
+  return (
+    <div className={`mt-2 flex gap-1.5 ${small ? "text-[13px]" : "text-[14px]"}`}>
+      <span className="text-[#d0021b] line-through">{fmt(full)}</span>
+      <span className="text-neutral-700">{fmt(deal)}</span>
+    </div>
+  );
+}
+
+function Options({ product, pick, small }: { product: CatalogProduct; pick: Pick; small?: boolean }) {
+  const real = product.options.filter((o) => o.values.length > 1); // a single value is nothing to choose
+  if (!real.length) return null;
+  return (
+    <>
+      {product.options.map((opt, oi) =>
+        real.includes(opt) ? (
+          <label key={opt.name} className={`cp-field mt-3 ${small ? "!h-[44px]" : ""}`}>
+            <select value={pick.picked[oi]} onChange={(e) => pick.setPicked((p) => p.map((x, i) => (i === oi ? e.target.value : x)))} className="!pr-8">
+              {opt.values.map((v) => <option key={v}>{v}</option>)}
+            </select>
+            <span>{opt.name}</span>
+            <ChevronDown className="pointer-events-none absolute right-3 top-1/2 size-4 -translate-y-1/2 text-neutral-500" />
+          </label>
+        ) : null
+      )}
+    </>
+  );
+}
+
+function QtyField({ pick, small }: { pick: Pick; small?: boolean }) {
+  return (
+    <label className={`cp-field mt-3 ${small ? "!h-[44px]" : ""}`}>
+      <input
+        type="number"
+        min={1}
+        max={99}
+        value={pick.qty}
+        placeholder=" "
+        onChange={(e) => pick.setQty(Math.min(99, Math.max(1, Math.floor(Number(e.target.value) || 1))))}
+      />
+      <span>Quantity</span>
+    </label>
+  );
+}
+
+function Row({ label, value, valueClass = "", big }: { label: string; value: string; valueClass?: string; big?: boolean }) {
+  return (
+    <div className={`flex justify-between ${big ? "cp-bold text-[17px]" : ""}`}>
+      <span>{label}</span>
+      <span className={valueClass}>{value}</span>
+    </div>
+  );
+}
+
+function Description({ text, small }: { text: string; small?: boolean }) {
+  const [open, setOpen] = useState(false);
+  if (!text) return null;
+  return (
+    <div className={small ? "mt-1.5" : "mt-4 border-t border-black/10 pt-3"}>
+      <button onClick={() => setOpen(!open)} className={`flex items-center gap-1 text-neutral-600 ${small ? "text-[12px]" : "text-[14px]"}`}>
+        Description <ChevronDown className={`size-3.5 transition-transform ${open ? "rotate-180" : ""}`} />
+      </button>
+      {open && <p className={`cp-fade mt-2 leading-relaxed text-neutral-600 ${small ? "text-[12px]" : "text-[14px]"}`}>{text}</p>}
+    </div>
+  );
+}
+
+function PayButton({
+  label, busy, disabled, onClick, className = "",
+}: { label: string; busy: boolean; disabled: boolean; onClick: () => void; className?: string }) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      className={`flex items-center justify-center rounded-[var(--co-r-btn)] px-2 font-medium transition-[filter,opacity] hover:brightness-110 disabled:cursor-default ${disabled && !busy ? "opacity-60" : ""} ${className}`}
+      style={{ background: "var(--co-button)", color: "var(--co-button-text)" }}
+    >
+      {busy ? <Spinner size={18} /> : label}
+    </button>
+  );
+}
+
+/** Decline asks once more ("Are you sure…?") before it moves on. */
+function DeclineButton({ onDecline, disabled, className = "" }: { onDecline: () => void; disabled: boolean; className?: string }) {
+  const [sure, setSure] = useState(false);
+  return (
+    <button
+      onClick={() => (sure ? onDecline() : setSure(true))}
+      disabled={disabled}
+      className={`h-[52px] rounded-[var(--co-r-btn)] border border-black/10 text-[14px] transition-colors hover:bg-black/[.03] ${className}`}
+      style={{ color: "var(--co-button)" }}
+    >
+      {sure ? "Are you sure you want to decline this offer?" : "Decline this offer"}
+    </button>
+  );
+}
+
+function Spinner({ size }: { size: number }) {
+  return (
+    <span
+      className="inline-block animate-spin rounded-full border-2 border-current border-r-transparent"
+      style={{ width: size, height: size }}
+      aria-label="Loading"
+    />
   );
 }

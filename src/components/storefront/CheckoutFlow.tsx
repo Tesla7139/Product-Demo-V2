@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { ChevronDown, CircleHelp, CreditCard, Loader2, Lock, Search, ShoppingBag } from "lucide-react";
 import { DEFAULT_ADDR, DEFAULT_EMAIL, DEFAULT_PHONE } from "@/components/sections/demo/DemoMock";
 import {
@@ -9,7 +9,6 @@ import {
 } from "./shared";
 import { UpsellPage } from "./UpsellPage";
 import { ThankYouPage } from "./ThankYouPage";
-import { ProcessingScreen } from "./ProcessingScreen";
 import type { CheckoutBranding, ExpressWallet } from "@/lib/clone/checkoutBranding";
 
 // The order flow that follows the storefront copy: checkout → post-purchase
@@ -17,17 +16,17 @@ import type { CheckoutBranding, ExpressWallet } from "@/lib/clone/checkoutBrandi
 // (name, logo, button colour, fonts, currency) are left in sessionStorage by
 // /clone-runtime.js.
 
-// processing / finalizing are the full-screen moments over the page before them
-type Stage = "checkout" | "processing" | "upsell" | "finalizing" | "thankyou";
+// processing: Shopify's blank checkout frame while the order goes through
+type Stage = "checkout" | "processing" | "upsell" | "thankyou";
 
-const PAYMENT_STEPS = ["Verifying payment details", "Processing payment", "Confirming your order"];
-const UPDATE_STEPS = ["Adding your new items", "Updating your order"];
+const PROCESSING_MS = 1600;
 
 export function CheckoutFlow() {
   const [loaded, setLoaded] = useState(false);
   const [cart, setCart] = useState<Line[]>([]);
   const [brand, setBrand] = useState<Brand>({});
   const [catalog, setCatalog] = useState<CatalogProduct[]>([]);
+  const [catalogReady, setCatalogReady] = useState(false);
   const [stage, setStage] = useState<Stage>("checkout");
   const [accepted, setAccepted] = useState<Line[]>([]);
   const [orderNo] = useState(orderNumber);
@@ -45,20 +44,27 @@ export function CheckoutFlow() {
     /* eslint-enable react-hooks/set-state-in-effect */
     if (b.name) document.title = `Checkout - ${b.name}`;
     if (b.host) {
-      loadCatalog(b.host).then(setCatalog);
+      loadCatalog(b.host).then((c) => { setCatalog(c); setCatalogReady(true); });
       loadCheckoutDesign(b.host).then(setDesign);
-    } else setDesign(null);
+    } else {
+      setDesign(null);
+      setCatalogReady(true);
+    }
   }, []);
 
-  // the overlays sit on the page they follow — only a real page change scrolls up
   useEffect(() => {
-    if (stage !== "processing" && stage !== "finalizing") window.scrollTo(0, 0);
+    window.scrollTo(0, 0);
   }, [stage]);
 
-  const toThankYou = useCallback(() => setStage("thankyou"), []);
   // offers come from the catalog; without any, payment goes straight to the confirmation
   const hasOffers = catalog.some((p) => !cart.some((l) => l.title.toLowerCase() === p.title.toLowerCase()));
-  const afterPayment = useCallback(() => setStage(hasOffers ? "upsell" : "thankyou"), [hasOffers]);
+  const processing = stage === "processing";
+  useEffect(() => {
+    // the offers are picked from the catalog: hold the frame until it's in
+    if (!processing || !catalogReady) return;
+    const t = window.setTimeout(() => setStage(hasOffers ? "upsell" : "thankyou"), PROCESSING_MS);
+    return () => window.clearTimeout(t);
+  }, [processing, catalogReady, hasOffers]);
 
   if (!loaded) {
     return (
@@ -75,7 +81,7 @@ export function CheckoutFlow() {
   const accent = design?.button || brand.accent || "#111827";
   const shipping = shippingFee(cart.reduce((s, l) => s + l.price * l.qty, 0));
   const bought = new Set(cart.map((l) => l.title.toLowerCase()));
-  const offers = catalog.filter((p) => !bought.has(p.title.toLowerCase())).slice(0, 3);
+  const offers = catalog.filter((p) => !bought.has(p.title.toLowerCase())).slice(0, 7);
 
   let page: React.ReactNode;
   if (!cart.length) {
@@ -92,23 +98,28 @@ export function CheckoutFlow() {
         </div>
       </>
     );
-  } else if ((stage === "upsell" || stage === "finalizing") && offers.length) {
-    page = (
+  } else if (processing) {
+    // the order going through: the checkout's frame, empty, as Shopify shows it
+    page = design === undefined ? (
+      <div className="min-h-screen bg-white" />
+    ) : (
       <>
-        <UpsellPage
-          brand={styled}
-          offers={offers}
-          orderNo={orderNo}
-          accent={accent}
-          currency={currency}
-          onDone={(lines) => { setAccepted(lines); setStage(lines.length ? "finalizing" : "thankyou"); }}
-        />
-        {stage === "finalizing" && (
-          <ProcessingScreen brand={styled} accent={accent} title="Updating your order" steps={UPDATE_STEPS} onDone={toThankYou} />
-        )}
+        <StoreHeader brand={styled} />
+        <SplitLayout main={<div className="min-h-[60vh]" aria-busy="true" aria-label="Processing your order" />} side={null} />
       </>
     );
-  } else if (stage !== "checkout" && stage !== "processing") {
+  } else if (stage === "upsell" && offers.length) {
+    page = (
+      <UpsellPage
+        brand={styled}
+        offers={offers}
+        orderNo={orderNo}
+        accent={accent}
+        currency={currency}
+        onDone={(lines) => { setAccepted(lines); setStage("thankyou"); }}
+      />
+    );
+  } else if (stage !== "checkout") {
     page = (
       <ThankYouPage
         brand={styled}
@@ -122,19 +133,7 @@ export function CheckoutFlow() {
     );
   } else {
     page = (
-      <>
-        <Checkout brand={styled} lines={cart} currency={currency} shipping={shipping} designPending={design === undefined} onPaid={() => setStage("processing")} />
-        {stage === "processing" && (
-          <ProcessingScreen
-            brand={styled}
-            accent={accent}
-            title="Your order's being processed"
-            steps={PAYMENT_STEPS}
-            success={{ title: "Payment successful", subtitle: `Order #${orderNo} is confirmed` }}
-            onDone={afterPayment}
-          />
-        )}
-      </>
+      <Checkout brand={styled} lines={cart} currency={currency} shipping={shipping} designPending={design === undefined} onPaid={() => setStage("processing")} />
     );
   }
 
@@ -161,7 +160,7 @@ function Checkout({
   const startPay = (how: "card" | ExpressWallet) => {
     if (paying) return;
     setPaying(how);
-    window.setTimeout(onPaid, how === "card" ? 900 : 1500);
+    window.setTimeout(onPaid, how === "card" ? 1800 : 1500);
   };
 
   const summary = <OrderSummary lines={lines} currency={currency} shipping={shipping} discountBox />;
@@ -248,7 +247,7 @@ function Checkout({
         className="cp-bold flex h-[50px] w-full items-center justify-center gap-2 text-[15px] transition-[filter] hover:brightness-110 disabled:opacity-95"
         style={{ background: "var(--co-button)", color: "var(--co-button-text)", borderRadius: "var(--co-r-btn)" }}
       >
-        {paying === "card" ? <><Loader2 className="size-[18px] animate-spin" /> Processing</> : "Pay now"}
+        {paying === "card" ? <><Loader2 className="size-[18px] animate-spin" /> Processing...</> : "Pay now"}
       </button>
 
       <div className="mt-10 flex flex-wrap gap-x-4 gap-y-2 border-t border-[#dedede] pt-4 text-[12px] underline underline-offset-2" style={{ color: "var(--co-accent)" }}>

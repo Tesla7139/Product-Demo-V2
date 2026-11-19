@@ -43,12 +43,12 @@ export function readSession<T>(key: string): T | null {
   }
 }
 
+/** As Shopify's checkout prints amounts: the currency's own decimals, always ($45.00, ¥4,500). */
 export function money(n: number, currency: string) {
-  const d = Number.isInteger(Math.round(n * 100) / 100) ? 0 : 2;
   try {
-    return new Intl.NumberFormat("en", { style: "currency", currency, minimumFractionDigits: d, maximumFractionDigits: d }).format(n);
+    return new Intl.NumberFormat("en", { style: "currency", currency }).format(n);
   } catch {
-    return n.toFixed(d);
+    return n.toFixed(2);
   }
 }
 

