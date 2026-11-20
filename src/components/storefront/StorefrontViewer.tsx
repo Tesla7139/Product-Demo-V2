@@ -2,10 +2,8 @@
 
 import { useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { Globe, Play, X } from "lucide-react";
+import { Globe, X } from "lucide-react";
 import { LoadingView } from "@/components/sections/demo/DemoExperience";
-import { readDemoMode } from "@/lib/demoMode";
-import { StoryTour } from "./StoryTour";
 
 /**
  * loading: the "Building <store>" screen while the store loads · intro: the
@@ -75,16 +73,9 @@ export function StorefrontViewer({ url, onClose }: { url: string | null; onClose
   const [ready, setReady] = useState(false); // first page of the store has loaded
   const [navigating, setNavigating] = useState(false); // later pages, inside the copy
   const [brand, setBrand] = useState<{ name?: string; logo?: string | null }>({});
+  // the store's favicon, from its first page: shown on the browser tab while it's open
+  const [icon, setIcon] = useState<string | null>(null);
   const openedAt = useRef(0);
-  const frameRef = useRef<HTMLIFrameElement>(null);
-  // the order-editing story (StoryTour): offered in the "Order editing" demo on
-  // checkouts with Shop Pay; it always starts from a fresh load of the checkout
-  const [editMode, setEditMode] = useState(false);
-  const [shopPay, setShopPay] = useState(false);
-  const [tour, setTour] = useState(false);
-  const [tourQueued, setTourQueued] = useState(false);
-  const [reloads, setReloads] = useState(0);
-  const tourQueuedRef = useRef(false);
   const host = url ? hostOf(url) : "";
   const startPath = url ? pathOf(url) : "";
 
@@ -97,7 +88,6 @@ export function StorefrontViewer({ url, onClose }: { url: string | null; onClose
     try {
       sessionStorage.removeItem("cp-cart");
       sessionStorage.removeItem("cp-brand");
-      sessionStorage.removeItem("cp-persona");
     } catch {
       /* storage blocked — the checkout still opens, the order flow just starts empty */
     }
@@ -107,10 +97,8 @@ export function StorefrontViewer({ url, onClose }: { url: string | null; onClose
     setLoadingDone(false);
     setReady(false);
     setBrand({});
+    setIcon(null);
     setSrc(null);
-    setEditMode(readDemoMode() === "edit");
-    setShopPay(false);
-    setTour(false);
     /* eslint-enable react-hooks/set-state-in-effect */
     let cancelled = false;
     const pasted: Start = { host, path: startPath || null, line: null };
@@ -123,7 +111,9 @@ export function StorefrontViewer({ url, onClose }: { url: string | null; onClose
       } catch {
         /* storage blocked */
       }
-      const handle = start.path?.match(/^\/products\/([^/?#]+)/)?.[1];
+      // a pasted product URL opens on that product; otherwise the checkout capture
+      // picks the store's best-seller that its checkout will deliver
+      const handle = /^\/products\//.test(startPath) ? start.path?.match(/^\/products\/([^/?#]+)/)?.[1] : undefined;
       setSrc(`/preview/store-checkout?host=${encodeURIComponent(start.host)}${handle ? `&handle=${handle}` : ""}`);
     });
     return () => { cancelled = true; };
@@ -163,13 +153,8 @@ export function StorefrontViewer({ url, onClose }: { url: string | null; onClose
       if (e.data?.type === "cp:ready") {
         setReady(true);
         setNavigating(false);
-        if (typeof e.data.shopPay === "boolean") setShopPay(e.data.shopPay);
-        if (tourQueuedRef.current && e.data.shopPay) {
-          tourQueuedRef.current = false;
-          setTourQueued(false);
-          setTour(true);
-        }
         if (e.data.name) setBrand((b) => (b.name ? b : { name: e.data.name, logo: e.data.logo }));
+        if (typeof e.data.icon === "string" && e.data.icon) setIcon((i) => i ?? e.data.icon);
       }
       if (e.data?.type === "cp:leaving") setNavigating(true);
     };
@@ -182,20 +167,27 @@ export function StorefrontViewer({ url, onClose }: { url: string | null; onClose
     };
   }, [url, onClose]);
 
-  // a fresh copy of the store's checkout in the frame (cached, so it's quick)
-  const reload = () => setReloads((n) => n + 1);
-  const startTour = () => {
-    tourQueuedRef.current = true;
-    setTourQueued(true);
-    setTour(false);
-    reload();
-  };
-  const endTour = () => {
-    try { sessionStorage.removeItem("cp-persona"); } catch { /* storage blocked */ }
-    setTour(false);
-    reload();
-  };
-  const frameSrc = src && reloads ? `${src}&r=${reloads}` : src;
+  // the tab wears the store's favicon while the store is open; ours comes back on close
+  useEffect(() => {
+    if (!url || !icon) return;
+    const links = [...document.querySelectorAll<HTMLLinkElement>("link[rel~='icon']")];
+    const saved = links.map((l) => ({ href: l.getAttribute("href"), type: l.getAttribute("type") }));
+    for (const l of links) { l.href = icon; l.removeAttribute("type"); }
+    let added: HTMLLinkElement | null = null;
+    if (!links.length) {
+      added = document.createElement("link");
+      added.rel = "icon";
+      added.href = icon;
+      document.head.appendChild(added);
+    }
+    return () => {
+      links.forEach((l, i) => {
+        if (saved[i].href) l.setAttribute("href", saved[i].href!);
+        if (saved[i].type) l.setAttribute("type", saved[i].type!);
+      });
+      added?.remove();
+    };
+  }, [url, icon]);
 
   return (
     <AnimatePresence>
@@ -207,18 +199,6 @@ export function StorefrontViewer({ url, onClose }: { url: string | null; onClose
           className="fixed inset-0 z-[100] flex flex-col bg-white"
         >
           <div className="relative flex h-12 shrink-0 items-center justify-center border-b border-neutral-200 bg-white px-3">
-            {editMode && shopPay && phase === "site" && !tour && (
-              <button
-                onClick={startTour}
-                disabled={tourQueued}
-                className="group inline-flex h-9 items-center gap-2 rounded-full bg-[#155FFF] pl-1.5 pr-4 text-[14px] font-bold text-white shadow-[0_8px_22px_-8px_rgba(21,95,255,.7)] transition-all hover:brightness-110 active:scale-95 disabled:opacity-70"
-              >
-                <span className="flex size-6 items-center justify-center rounded-full bg-white/20 transition-transform group-hover:scale-110">
-                  <Play className="size-3.5 fill-white" />
-                </span>
-                {tourQueued ? "Getting ready…" : "Start tour"}
-              </button>
-            )}
             <button
               onClick={onClose}
               aria-label="Close"
@@ -230,11 +210,10 @@ export function StorefrontViewer({ url, onClose }: { url: string | null; onClose
 
           <div className="relative min-h-0 flex-1">
             <div className="relative h-full w-full">
-              {frameSrc && (
+              {src && (
                 <iframe
-                  ref={frameRef}
-                  key={frameSrc}
-                  src={frameSrc}
+                  key={src}
+                  src={src}
                   title={host}
                   onLoad={() => { setReady(true); setNavigating(false); }}
                   // no allow-top-navigation: the store's frame-busting can't take over the page
@@ -242,16 +221,7 @@ export function StorefrontViewer({ url, onClose }: { url: string | null; onClose
                   className="block h-full w-full border-0 bg-white"
                 />
               )}
-              <ProgressBar active={phase === "site" && navigating && !tour} />
-              {tour && (
-                <StoryTour
-                  frame={frameRef}
-                  store={brand.name || nameFromHost(host)}
-                  logo={brand.logo || null}
-                  onEnd={endTour}
-                  onReplay={startTour}
-                />
-              )}
+              <ProgressBar active={phase === "site" && navigating} />
             </div>
 
             <AnimatePresence>

@@ -21,6 +21,7 @@ type ShopifyProduct = {
   product_type?: string;
   tags?: string[] | string;
   vendor?: string;
+  body_html?: string;
   images?: { src?: string }[];
   variants?: { id?: number; title?: string; available?: boolean; price?: string }[];
 };
@@ -69,6 +70,7 @@ async function productPick(site: string): Promise<{ path: string; line: StartLin
         type: p.product_type,
         tags: tagsOf(p),
         vendor: p.vendor,
+        details: (p.body_html ?? "").replace(/<[^>]+>/g, " ").replace(/&[a-z#0-9]+;/gi, " ").replace(/\s+/g, " ").slice(0, 1500),
       }))
     );
     const pick =
@@ -115,9 +117,10 @@ async function findStart(host: string): Promise<Start> {
   }
   const pick = await productPick(site);
 
-  // Start capturing the store's real checkout with that product now, without
-  // waiting: by the time the preview asks for it, it's cached or on its way.
-  void checkoutSnapshot(site, pick ? decodeURIComponent(pick.path.slice("/products/".length)) : null);
+  // Start capturing the store's real checkout now, without waiting: by the time
+  // the preview asks for it, it's cached or on its way. The capture picks its
+  // own product — the store's best-seller its checkout will deliver.
+  void checkoutSnapshot(site, null);
   return { host: site, path: pick?.path ?? null, line: pick?.line ?? null };
 }
 

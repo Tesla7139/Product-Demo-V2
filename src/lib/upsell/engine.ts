@@ -6,10 +6,16 @@
  *
  * ─── The cart product ("hero") ────────────────────────────────────────────
  * A store's core product: in stock, with a photo, not a bundle / gift card /
- * subscription, priced in the middle of the catalog (35th–85th percentile)
- * rather than a $4 sticker or a $600 set — and one that leaves room for at
- * least two upsells under it. Among those, the store's own order wins (its
- * catalog lists featured / best-selling products first).
+ * subscription. Ranked (rankHeroes) by:
+ *   + the store's best-sellers, highest first (its "best selling" collection
+ *     order, read by the checkout capture)
+ *   + in stock across its sizes / colours (a best-seller in most sizes is one
+ *     the store ships everywhere it sells)
+ *   + priced in the middle of the catalog (35th–85th percentile) rather than a
+ *     $4 sticker or a $600 set
+ *   + room for at least two upsells under it
+ * then the store's own order. The checkout capture tries them in that order
+ * until the store's checkout takes one (deliverable where it's captured).
  *
  * ─── The offers ───────────────────────────────────────────────────────────
  * A post-purchase offer is a one-tap buy: the shopper has just paid, and pays
@@ -38,7 +44,16 @@
  *         in the cart, gift cards, warranties, shipping protection,
  *         subscriptions, samples, products without a photo
  *
- *  3. The two pages. "One-time offer!" takes the best score. "Last offer:"
+ *  3. Never the same product twice. A bundle is the products inside it: a
+ *     product whose name names others ("Energy MAX Patches 12 Pack"), or one
+ *     that is a bundle by name or by its description ("What's inside: …",
+ *     "3 Packs of …", "Berberine, MB and Unpuff patches combine…") and names
+ *     two or more of the catalog's products there. An offer that shares any
+ *     product with the cart is left out (no Metabolic MAX after a Burn Trio
+ *     that holds it, no Burn Trio after a Metabolic MAX), and the two offers
+ *     share none with each other. Bundles aren't picked as the cart product.
+ *
+ *  4. The two pages. "One-time offer!" takes the best score. "Last offer:"
  *     is a downsell: the best of the rest that is cheaper than the first
  *     offer, from another family and, where the catalog allows, another kind
  *     of product (not socks after socks).
@@ -58,6 +73,10 @@ export type UpsellProduct = {
   type?: string;
   tags?: string[];
   vendor?: string;
+  /** the product's description as plain text: what a bundle holds */
+  details?: string;
+  /** the share of its variants in stock, 0–1 (unset: unknown) */
+  stock?: number;
 };
 
 export type CartLine = { title: string; price: number; qty: number };
@@ -75,7 +94,7 @@ const ADD_ON =
 // things bought again and again: the same type is fine
 const CONSUMABLE =
   /\b(refills?|pods?|patches|capsules?|tablets?|gumm(y|ies)|tea|coffee|snacks?|bars?|serum|cream|lotion|shampoo|conditioner|soap|wash|supplements?|vitamins?|protein|candles?|filters?|wipes?|food|treats?)\b/i;
-const BUNDLE = /\b(bundles?|sets?|kits?|stacks?|packs?|builder|collection|mystery|outlet)\b/i;
+const BUNDLE = /\b(bundles?|sets?|kits?|stacks?|packs?|duo|trio|combo|builder|collection|mystery|outlet)\b/i;
 
 const STOP = new Set([
   "the", "and", "for", "with", "of", "in", "on", "a", "an", "to", "by", "your", "our", "new", "pack", "packs", "set", "kit",
@@ -103,6 +122,91 @@ const category = (type = "") => norm(type.split(/\s*>\s*/).slice(0, 3).join(" ")
 const brandWords = (catalog: UpsellProduct[]) => new Set(catalog.map((p) => norm(p.vendor)).filter(Boolean).flatMap((v) => v.split(" ")));
 
 const usable = (p: UpsellProduct) => p.hasImage && p.price > 0 && p.available !== false && !NEVER_OFFER.test(text(p));
+
+/* ─── what each product holds ─────────────────────────────────────────── */
+
+// a description that lists a bundle's contents
+const CONTENTS_CUE =
+  /what.?s inside|\binclude[sd]?\b|\bcomes with\b|\d+\s*x?\s*packs?\b|\bpacks? of\b|\bbundle|brought together|\bcombine|\b(duo|trio|stack|kit|set)\b/i;
+// pack words: not part of what a product is called
+// ("MAX", "Plus", "Mini" stay: "Energy MAX" isn't "Energy")
+const PACKAGING = new Set(["pack", "packs", "bundle", "bundles", "set", "sets", "kit", "kits", "stack", "stacks", "duo", "trio", "combo", "count", "ct", "of", "x", "single", "pair", "pairs", "multipack", "variety"]);
+// a bundle by its own description, contents named or not ("8 Packs of Wellness Patches")
+const MANY = /\b\d+\s*(x\s*)?packs?\s+of\b|what.?s inside/i;
+
+type Contents = { parts: Map<UpsellProduct, Set<UpsellProduct>>; bundles: Set<UpsellProduct> };
+const contentsCache = new WeakMap<readonly UpsellProduct[], Contents>();
+
+/**
+ * For every product, the catalog products it is (itself) or holds (a bundle's
+ * contents). A product is found by its name, without brand, pack words or the
+ * words most of the catalog's names share ("Metabolic MAX Patches" → "metabolic max").
+ */
+function contentsOf(catalog: readonly UpsellProduct[]): Contents {
+  const hit = contentsCache.get(catalog);
+  if (hit) return hit;
+  const n = catalog.length;
+  const vendors = brandWords([...catalog]);
+  const tf = new Map<string, number>();
+  for (const p of catalog) for (const w of new Set(norm(core(p.title)).split(" "))) tf.set(w, (tf.get(w) ?? 0) + 1);
+  const generic = (w: string) => (tf.get(w) ?? 0) > Math.max(3, n * 0.25);
+  const nameOf = (p: UpsellProduct) =>
+    norm(core(p.title)).split(" ")
+      .filter((w) => w && !vendors.has(w) && !STOP.has(w) && !PACKAGING.has(w) && !/^\d+$/.test(w) && !generic(w))
+      .join(" ");
+  const titles = catalog.map((p) => ` ${norm(p.title)} `);
+  const details = catalog.map((p) => ` ${norm(p.details)} `);
+  // a "name" found in a quarter of the descriptions is an everyday word ("energy"), not a product
+  const names = catalog.map((p) => {
+    const k = nameOf(p);
+    return k.length >= 3 && details.filter((d) => d.includes(` ${k} `)).length <= Math.max(4, n * 0.25) ? k : "";
+  });
+
+  // the catalog products named in a product's title, and in its description
+  const named = (i: number, among: (j: number) => boolean) => {
+    const inTitle: UpsellProduct[] = [];
+    const inDetails: UpsellProduct[] = [];
+    catalog.forEach((q, j) => {
+      if (i === j || !names[j] || !among(j)) return;
+      const k = ` ${names[j]} `;
+      if (titles[i].includes(k)) inTitle.push(q);
+      else if (details[i].includes(k)) inDetails.push(q);
+    });
+    return { inTitle, inDetails };
+  };
+
+  // first, which products are bundles: by name, by a description that says so
+  // ("8 Packs of …", "What's inside"), or one that names two or more products
+  // and reads like a bundle's ("…and Unpuff patches combine…"). A single
+  // product's description may suggest others ("pairs well with Unpuff"): that
+  // alone doesn't make it a bundle.
+  const bundles = new Set<UpsellProduct>();
+  catalog.forEach((p, i) => {
+    const d = p.details ?? "";
+    if (BUNDLE.test(text(p)) || MANY.test(d)) { bundles.add(p); return; }
+    // other products: not its own name again ("Metabolic Max (Special Offer)" in
+    // Metabolic MAX's description) nor a part of it ("max")
+    const own = ` ${names[i] || nameOf(p)} `;
+    const { inTitle, inDetails } = named(i, (j) => !own.includes(` ${names[j]} `));
+    const others = new Set([...inTitle, ...inDetails].map((q) => names[catalog.indexOf(q)]));
+    if (others.size >= 2 && CONTENTS_CUE.test(d)) bundles.add(p);
+  });
+
+  // then what each holds: only single products are contents (a bundle's own name,
+  // "The MAX Stack" → "max", says nothing about what else carries that word);
+  // only a bundle's description is read for them
+  const single = (j: number) => !bundles.has(catalog[j]);
+  const parts = new Map<UpsellProduct, Set<UpsellProduct>>();
+  catalog.forEach((p, i) => {
+    const { inTitle, inDetails } = named(i, single);
+    parts.set(p, new Set([p, ...inTitle, ...(bundles.has(p) ? inDetails : [])]));
+  });
+  const out = { parts, bundles };
+  contentsCache.set(catalog, out);
+  return out;
+}
+
+const overlaps = (a: Set<UpsellProduct> | undefined, b: Set<UpsellProduct>) => !!a && [...a].some((x) => b.has(x));
 
 /** how well a price sits as a one-tap upsell, 0–1 (ratio = offer price / cart value) */
 function priceFit(ratio: number) {
@@ -143,10 +247,17 @@ export function rankUpsells<T extends UpsellProduct>(cart: CartLine[], catalog: 
   );
   const cartTags = new Set(bought.flatMap((p) => (p.tags ?? []).map(norm)).filter(rare));
   const cap = relaxed ? 1 : 0.6;
+  // every product the cart already holds, bundles opened up
+  const { parts } = contentsOf(catalog);
+  const held = new Set<UpsellProduct>(bought.flatMap((p) => [...(parts.get(p) ?? [p])]));
+  // and their families (a bundle's "Metabolic MAX" rules out "Metabolic Max (Special Offer)")
+  const heldFamilies = new Set([...held].map((p) => family(p.title, vendors)).filter(Boolean));
 
   const out: Ranked<T>[] = [];
   for (const p of catalog) {
     if (!usable(p) || inCart.has(norm(p.title)) || cartFamilies.has(family(p.title, vendors))) continue;
+    // never a product the cart already holds, alone or in a bundle
+    if (overlaps(parts.get(p), held) || heldFamilies.has(family(p.title, vendors))) continue;
     const deal = (p.price * (100 - OFFER_PCT)) / 100;
     const ratio = deal / value;
     if (ratio > cap) continue;
@@ -197,7 +308,9 @@ export function pickOffers<T extends UpsellProduct>(cart: CartLine[], catalog: T
   const first = ranked[0] ?? null;
   const brand = brandWords(catalog);
   const fam = (r: Ranked<T>) => family(r.product.title, brand);
-  const rest = first ? ranked.slice(1).filter((r) => fam(r) !== fam(first)) : [];
+  const { parts } = contentsOf(catalog);
+  const firstParts = first ? parts.get(first.product) ?? new Set<UpsellProduct>([first.product]) : new Set<UpsellProduct>();
+  const rest = first ? ranked.slice(1).filter((r) => fam(r) !== fam(first) && !overlaps(parts.get(r.product), firstParts)) : [];
   const cheaper = (r: Ranked<T>) => r.product.price < first!.product.price;
   const otherKind = (r: Ranked<T>) => kind(r.product.title) !== kind(first!.product.title);
   // a cheaper product of another kind; then another kind; then cheaper; then anything left
@@ -206,18 +319,67 @@ export function pickOffers<T extends UpsellProduct>(cart: CartLine[], catalog: T
 }
 
 /**
+ * Checkout add-ons ("Your $3.00 patches"): small extras ticked on before paying.
+ * Single products only (no bundles), nothing the cart already holds, one per
+ * family, best fit first. `fullPrice` keeps a store's deal to the products it
+ * covers ("any patch for $3 instead of $15").
+ */
+export function pickAddOns<T extends UpsellProduct>(cart: CartLine[], catalog: T[], opts: { fullPrice?: number; limit: number }): T[] {
+  const { bundles } = contentsOf(catalog);
+  const brand = brandWords(catalog);
+  const seen = new Set<string>();
+  const out: T[] = [];
+  // easy add-ons first (the one-tap price bands), then the wider band to fill the box
+  const strict = rankUpsells(cart, catalog);
+  const ids = new Set(strict.map((r) => r.product));
+  const ranked = [...strict, ...rankUpsells(cart, catalog, true).filter((r) => !ids.has(r.product))];
+  for (const r of ranked) {
+    const p = r.product;
+    if (bundles.has(p) || BUNDLE.test(text(p))) continue;
+    if (opts.fullPrice != null && Math.abs(p.price - opts.fullPrice) > 0.005) continue;
+    const fam = family(p.title, brand);
+    if (seen.has(fam)) continue;
+    seen.add(fam);
+    out.push(p);
+    if (out.length >= opts.limit) break;
+  }
+  return out;
+}
+
+/**
  * The product the demo's cart opens with: a core product in the middle of the
  * catalog's prices that leaves room for two upsells. Null for an empty catalog.
  */
-export function pickHero<T extends UpsellProduct>(catalog: T[]): T | null {
+export function pickHero<T extends UpsellProduct>(catalog: T[], popular: string[] = []): T | null {
+  return rankHeroes(catalog, popular)[0] ?? catalog[0] ?? null;
+}
+
+/**
+ * Every product that could open the demo's cart, best first: best-sellers in
+ * stock across their sizes, mid-priced, with room for upsells. `popular` is the
+ * store's best-selling order, as product handles.
+ */
+export function rankHeroes<T extends UpsellProduct>(catalog: T[], popular: string[] = []): T[] {
   const buyable = catalog.filter(usable);
-  if (!buyable.length) return catalog[0] ?? null;
-  const simple = buyable.filter((p) => !BUNDLE.test(text(p)));
+  if (!buyable.length) return [];
+  const { bundles } = contentsOf(catalog);
+  const simple = buyable.filter((p) => !BUNDLE.test(text(p)) && !bundles.has(p));
   const pool = simple.length ? simple : buyable;
   const prices = pool.map((p) => p.price).sort((a, b) => a - b);
   const at = (q: number) => prices[Math.min(prices.length - 1, Math.floor(q * prices.length))];
   const [lo, hi] = [at(0.35), at(0.85)];
-  const mid = pool.filter((p) => p.price >= lo && p.price <= hi);
-  const roomy = (p: T) => rankUpsells([{ title: p.title, price: p.price, qty: 1 }], catalog).length >= 2;
-  return mid.find(roomy) ?? pool.find(roomy) ?? mid[0] ?? pool[0];
+  // a best-seller's place counts most at the top of the list
+  const place = new Map<string, number>();
+  popular.forEach((h, i) => { if (!place.has(h)) place.set(h, i); });
+  const top = Math.max(1, Math.min(popular.length, 40));
+  const score = (p: T) => {
+    const i = p.handle != null ? place.get(p.handle) : undefined;
+    const sells = i == null ? 0 : Math.max(0, 1 - i / top);
+    const stock = p.stock ?? 1;
+    const mid = p.price >= lo && p.price <= hi ? 1 : 0;
+    const roomy = rankUpsells([{ title: p.title, price: p.price, qty: 1 }], catalog).length >= 2 ? 1 : 0;
+    return 3 * sells + 1.5 * stock - (stock < 0.5 ? 2 : 0) + 2 * mid + 1.5 * roomy;
+  };
+  const scored = pool.map((p, i) => ({ p, i, s: score(p) }));
+  return scored.sort((a, b) => b.s - a.s || a.i - b.i).map((x) => x.p);
 }

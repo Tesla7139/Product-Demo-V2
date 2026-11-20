@@ -958,7 +958,7 @@
         pw.form.insertBefore(msg, pw.form.firstChild);
       }
     }
-    try { parent.postMessage({ type: "cp:ready", title: document.title, name: brand.name, logo: brand.logo }, ORIGIN); } catch { /* top-level */ }
+    try { parent.postMessage({ type: "cp:ready", title: document.title, name: brand.name, logo: brand.logo, icon: (document.querySelector("link[rel~='icon']") || document.querySelector("link[rel='apple-touch-icon']") || {}).href || null }, ORIGIN); } catch { /* top-level */ }
   }
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", ready);
   else ready();

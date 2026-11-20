@@ -40,6 +40,8 @@ export type CatalogProduct = {
   type?: string;
   tags?: string[];
   vendor?: string;
+  /** the full description as plain text: what a bundle holds */
+  details?: string;
 };
 
 export function readSession<T>(key: string): T | null {
@@ -119,6 +121,7 @@ function fromShopify(p: ShopifyProduct): CatalogProduct {
     type: p.product_type || undefined,
     tags: Array.isArray(p.tags) ? p.tags : (p.tags ?? "").split(",").map((t) => t.trim()).filter(Boolean),
     vendor: p.vendor,
+    details: stripHtml(p.body_html).slice(0, 1500),
   };
 }
 

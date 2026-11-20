@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { isBlockedHost } from "@/lib/clone/upstream";
 import { checkoutSnapshot, snapshotFailures } from "@/lib/clone/checkoutSnapshot";
+import { checkoutUpsell } from "@/lib/upsell/checkoutDeals";
 
 export const runtime = "nodejs";
 export const maxDuration = 60; // a cold capture renders the store's checkout in a headless browser
@@ -24,7 +25,9 @@ export async function GET(req: NextRequest) {
 
   const origin = req.nextUrl.origin;
   const name = snap.html.match(/<title>\s*Checkout\s*[-–—]\s*([^<]+?)\s*<\/title>/i)?.[1] ?? null;
-  const config = { host, origin, name, currency: snap.currency, line: snap.line };
+  // the store's checkout add-ons ("Your $3.00 patches"), when it has a deal set up
+  const upsell = await checkoutUpsell(host, [{ title: snap.line.title, price: snap.line.price, qty: snap.line.qty }]);
+  const config = { host, origin, name, currency: snap.currency, line: snap.line, upsell };
   const tags =
     `<script>window.__CPCO=${JSON.stringify(config).replace(/</g, "\\u003c")}</script>` +
     `<script src="${origin}/checkout-snapshot.js" defer></script>`;
