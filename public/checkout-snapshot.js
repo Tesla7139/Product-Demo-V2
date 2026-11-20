@@ -705,13 +705,13 @@
       // borders and colours
       // an outer box around the heading and the cards
       // a heading and note, then plain rows: checkbox, a bordered photo tile, the name, the deal price then the old one
-      ".cp-up-own{text-align:left}" +
+      ".cp-up-own{text-align:left;font-size:.9em}" +
       ".cp-up-own .cp-up-h{font-size:1.07em;font-weight:700;line-height:1.3}" +
       ".cp-up-own .cp-up-note{margin-top:2px;font-size:.9em}" +
-      ".cp-up-own .cp-up-list{display:flex;flex-direction:column;gap:14px;margin-top:14px}" +
-      ".cp-up-own .cp-up-pick{display:flex;align-items:center;gap:14px}" +
-      ".cp-up-own .cp-up-box{width:20px;height:20px;border-radius:5px}" +
-      ".cp-up-own .cp-up-img{flex:none;width:72px;height:72px;border:1px solid " + lineColor + ";border-radius:" + cardRadius + ";overflow:hidden;background:#fff;transition:border-color .15s}" +
+      ".cp-up-own .cp-up-list{display:flex;flex-direction:column;gap:13px;margin-top:13px}" +
+      ".cp-up-own .cp-up-pick{display:flex;align-items:center;gap:13px}" +
+      ".cp-up-own .cp-up-box{width:18px;height:18px;border-radius:4px}" +
+      ".cp-up-own .cp-up-img{flex:none;width:65px;height:65px;border:1px solid " + lineColor + ";border-radius:" + cardRadius + ";overflow:hidden;background:#fff;transition:border-color .15s}" +
       ".cp-up-own .cp-up-pick:hover .cp-up-img{border-color:" + muted + "}" +
       ".cp-up-own .cp-up-pick[aria-checked=true] .cp-up-img{border-color:" + ink + "}" +
       ".cp-up-own .cp-up-img img{width:100%;height:100%;object-fit:cover}" +
@@ -994,6 +994,95 @@
       });
     });
   }).observe(document.body, { childList: true, subtree: true });
+
+  /* ---------------- the point of the demo, on Shop Pay's page ----------------
+     On Shop Pay's column (address and card already filled in), a tap anywhere
+     that isn't a control blurs the page around its Pay now button and floats a
+     cloud over it: shoppers tap through on autopay and miss that the address is
+     an old one. The next tap puts the page back. */
+  (function payNudge() {
+    var style = document.createElement("style");
+    style.textContent =
+      ".cp-nudge{position:fixed;inset:0;z-index:2147483000;background:rgba(20,20,30,.18);-webkit-backdrop-filter:blur(5px);backdrop-filter:blur(5px);opacity:0;transition:opacity .3s}" +
+      ".cp-nudge.on{opacity:1}" +
+      ".cp-nudge-btn{position:fixed;margin:0!important;pointer-events:none;box-shadow:0 0 0 6px rgba(255,255,255,.85),0 0 42px 10px rgba(255,255,255,.7)!important;animation:cp-nudge-glow 1.8s ease-in-out infinite}" +
+      "@keyframes cp-nudge-glow{50%{box-shadow:0 0 0 9px rgba(255,255,255,.6),0 0 60px 18px rgba(255,255,255,.55)}}" +
+      ".cp-cloud{position:fixed;width:min(380px,calc(100vw - 32px));box-sizing:border-box;padding:22px 28px 20px;border-radius:44px;background:#fff;color:#111;text-align:center;" +
+        "font:400 14px/1.45 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;filter:drop-shadow(0 14px 30px rgba(0,0,0,.22));transform:translateY(8px) scale(.96);transition:transform .35s cubic-bezier(.2,.9,.3,1.2)}" +
+      ".cp-nudge.on .cp-cloud{transform:none}" +
+      // the puffs along the top that make it a cloud
+      ".cp-cloud i{position:absolute;border-radius:50%;background:#fff}" +
+      ".cp-cloud b{display:block;position:relative;font-size:17px;font-weight:700;letter-spacing:-.01em}" +
+      ".cp-cloud p{position:relative;margin:6px 0 0;color:#555}";
+    document.head.appendChild(style);
+
+    var open = null;
+    function close() {
+      if (!open) return;
+      var o = open;
+      open = null;
+      window.removeEventListener("scroll", o.place, true);
+      window.removeEventListener("resize", o.place);
+      o.el.classList.remove("on");
+      setTimeout(function () { o.el.remove(); }, 300);
+    }
+
+    function show(btn) {
+      var el = document.createElement("div");
+      el.className = "cp-nudge";
+      var copy = btn.cloneNode(true);
+      copy.className += " cp-nudge-btn";
+      copy.removeAttribute("data-cp-sp-pay");
+      copy.setAttribute("aria-hidden", "true");
+      var cloud = document.createElement("div");
+      cloud.className = "cp-cloud";
+      cloud.setAttribute("role", "note");
+      cloud.innerHTML =
+        // puffs on top, and a trail of two small ones down towards the button
+        "<i style='width:96px;height:96px;left:14%;top:-34px'></i><i style='width:120px;height:120px;left:38%;top:-46px'></i><i style='width:84px;height:84px;right:12%;top:-26px'></i>" +
+        "<i data-trail style='width:22px;height:22px'></i><i data-trail style='width:12px;height:12px'></i>" +
+        "<b>Customers are so used to autopay</b>" +
+        "<p>Saved addresses make checkout fast. When the address is out of date, the order goes there anyway.</p>";
+      el.appendChild(copy);
+      el.appendChild(cloud);
+      document.body.appendChild(el);
+      var trail = cloud.querySelectorAll("[data-trail]");
+      function place() {
+        var r = btn.getBoundingClientRect();
+        copy.style.left = r.left + "px";
+        copy.style.top = r.top + "px";
+        copy.style.width = r.width + "px";
+        copy.style.height = r.height + "px";
+        var cw = cloud.offsetWidth, ch = cloud.offsetHeight;
+        var left = Math.max(16, Math.min(window.innerWidth - cw - 16, r.left + r.width / 2 - cw / 2));
+        // above the button, clear of the puffs; below it when there's no room
+        var above = r.top - ch - 70 > 50;
+        cloud.style.left = left + "px";
+        cloud.style.top = (above ? r.top - ch - 58 : r.bottom + 70) + "px";
+        var x = r.left + r.width / 2 - left;
+        trail[0].style.left = x + 18 + "px";
+        trail[1].style.left = x + 30 + "px";
+        trail[0].style.top = above ? ch + 6 + "px" : "-30px";
+        trail[1].style.top = above ? ch + 32 + "px" : "-48px";
+      }
+      open = { el: el, place: place };
+      place();
+      window.addEventListener("scroll", place, true);
+      window.addEventListener("resize", place);
+      el.addEventListener("click", function (e) { e.stopPropagation(); close(); });
+      requestAnimationFrame(function () { el.classList.add("on"); });
+    }
+
+    var CONTROLS = "a, button, input, select, textarea, label, [role=button], [role=checkbox], [role=radio], [tabindex]:not([tabindex='-1']), .cp-win, .cp-scrim";
+    document.addEventListener("click", function (e) {
+      var t = e.target instanceof Element ? e.target : null;
+      if (!t || open || paying || t.closest(CONTROLS)) return;
+      var btn = document.querySelector(".cp-sp [data-cp-sp-pay]");
+      if (!btn || btn.classList.contains("cp-sp-wait") || btn.getBoundingClientRect().height === 0) return; // only on Shop Pay's page, once it can pay
+      show(btn);
+    });
+    document.addEventListener("keydown", function (e) { if (e.key === "Escape") close(); });
+  })();
 
   try { parent.postMessage({ type: "cp:ready", title: document.title, name: brand.name, icon: (document.querySelector("link[rel~='icon']") || document.querySelector("link[rel='apple-touch-icon']") || {}).href || null }, ORIGIN); } catch { /* top-level */ }
 })();

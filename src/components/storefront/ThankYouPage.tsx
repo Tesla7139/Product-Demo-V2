@@ -2,7 +2,7 @@
 
 import { rankUpsells } from "@/lib/upsell/engine";
 import { useEffect, useMemo, useState } from "react";
-import { ChevronDown, CreditCard, Loader2, MapPin, Pencil, Plus, Trash2, UserRound, X } from "lucide-react";
+import { Check, ChevronDown, CreditCard, Loader2, MapPin, Pencil, Plus, Trash2, UserRound, X } from "lucide-react";
 import { DemoImg } from "@/components/sections/demo/DemoImg";
 import { DEFAULT_ADDR, DEFAULT_EMAIL } from "@/components/sections/demo/DemoMock";
 import {
@@ -69,7 +69,8 @@ export function ThankYouPage({
 
   const suggestions = useMemo(() => {
     // what goes with the order, by the upsell engine's rules (src/lib/upsell/engine.ts)
-    return rankUpsells(lines, catalog, true).slice(0, 8).map((r) => r.product);
+    // (rows ticked from the list stay in it, so they can be unticked)
+    return rankUpsells(lines.filter((l) => !l.id.startsWith("pick-")), catalog, true).slice(0, 8).map((r) => r.product);
   }, [catalog, lines]);
 
   const toggle = (s: Section) => {
@@ -85,6 +86,21 @@ export function ThankYouPage({
       ...ls,
       { id: `add-${p.id}-${ls.length}`, title: p.title, variant: v && v.title !== "Default Title" ? v.title : "", price, compareAt: off ? full : undefined, qty, image: v?.image ?? p.images[0] ?? null },
     ]);
+    setToast(`${p.title} added to your order`);
+  };
+
+  // a ticked "You may also like" row: in the order while ticked, out again when unticked
+  const tickProduct = (p: CatalogProduct, on: boolean, off: number) => {
+    const id = `pick-${p.id}`;
+    if (!on) {
+      setLines((ls) => ls.filter((l) => l.id !== id));
+      setToast(`${p.title} removed from your order`);
+      return;
+    }
+    const v = p.variants[0];
+    const full = v?.price ?? p.price;
+    const price = off ? Math.round(full * (100 - off)) / 100 : full;
+    setLines((ls) => [...ls.filter((l) => l.id !== id), { id, title: p.title, variant: v && v.title !== "Default Title" ? v.title : "", price, compareAt: off ? full : undefined, qty: 1, image: v?.image ?? p.images[0] ?? null }]);
     setToast(`${p.title} added to your order`);
   };
 
@@ -261,14 +277,17 @@ export function ThankYouPage({
 
       {/* thank-you page upsells: at full price with order editing alone, 25% off in the upsell demos */}
       {!cancelled && suggestions.length > 0 && (
-        <div className={`cp-rise ${editing ? "mt-6" : "mt-8"} rounded-2xl border border-neutral-200 p-4 sm:p-5`} style={rise(2)}>
-          <h2 className="cp-heading text-[17px]">You may also like these products</h2>
-          <div className="-mx-1 mt-4 flex snap-x gap-4 overflow-x-auto px-1 pb-2">
-            {suggestions.map((p) => (
-              <SuggestCard key={p.id} product={p} accent={accent} fmt={fmt} off={upsells ? SUGGEST_OFF : 0} onBuy={(variant, qty) => addProduct(p, { off: upsells ? SUGGEST_OFF : 0, variant, qty })} />
-            ))}
-          </div>
-        </div>
+        <SuggestSection
+          products={suggestions}
+          accent={accent}
+          fmt={fmt}
+          off={upsells ? SUGGEST_OFF : 0}
+          className={editing ? "mt-6" : "mt-8"}
+          style={rise(2)}
+          ticked={new Set(lines.filter((l) => l.id.startsWith("pick-")).map((l) => l.id.slice(5)))}
+          onBuy={(p, variant, qty) => addProduct(p, { off: upsells ? SUGGEST_OFF : 0, variant, qty })}
+          onTick={(p, on) => tickProduct(p, on, upsells ? SUGGEST_OFF : 0)}
+        />
       )}
 
       {!cancelled && (
@@ -442,6 +461,100 @@ function AddCard({ product: p, accent, fmt, onAdd }: CardProps & { onAdd: (qty: 
       <button onClick={() => { onAdd(qty); setQty(1); }} className="mt-2 h-10 shrink-0 rounded-lg text-[14px] font-bold" style={{ background: accent, color: textOn(accent) }}>
         Add
       </button>
+    </div>
+  );
+}
+
+/**
+ * "You may also like": product cards with Buy now; or (the switch at the top
+ * right) checkbox rows like the checkout's add-ons, three in
+ * view and the rest a scroll down the list.
+ */
+const ROWS_SHOWN = 3;
+const ROW_H = 64; // a row: its 56px photo and a little air
+const ROW_GAP = 10;
+
+function SuggestSection({
+  products, accent, fmt, off, className = "", style, ticked, onBuy, onTick,
+}: {
+  products: CatalogProduct[];
+  accent: string;
+  fmt: (n: number) => string;
+  off: number;
+  className?: string;
+  style?: React.CSSProperties;
+  ticked: Set<string>;
+  onBuy: (p: CatalogProduct, variant: number, qty: number) => void;
+  onTick: (p: CatalogProduct, on: boolean) => void;
+}) {
+  const [rows, setRows] = useState(false);
+
+  return (
+    <div className={`cp-rise rounded-2xl border border-neutral-200 p-4 sm:p-5 ${className}`} style={style}>
+      <div className="flex items-center justify-between gap-3">
+        <h2 className="cp-heading text-[17px]">You may also like these products</h2>
+        <div className="flex shrink-0 items-center gap-3">
+          <button
+            type="button"
+            role="switch"
+            aria-checked={rows}
+            onClick={() => setRows(!rows)}
+            className="flex select-none items-center gap-2 text-[13px] text-neutral-600"
+          >
+            Checkboxes
+            <span className="relative h-[22px] w-[38px] rounded-full transition-colors duration-200" style={{ background: rows ? accent : "#d4d4d4" }}>
+              <span className={`absolute left-[3px] top-[3px] size-4 rounded-full bg-white shadow transition-transform duration-200 ${rows ? "translate-x-4" : ""}`} />
+            </span>
+          </button>
+        </div>
+      </div>
+
+      {rows ? (
+        <div
+          className="-mr-2 mt-4 flex flex-col overflow-y-auto overscroll-contain pr-2"
+          style={{ gap: ROW_GAP, maxHeight: ROWS_SHOWN * ROW_H + (ROWS_SHOWN - 1) * ROW_GAP + ROW_H * 0.4 }}
+        >
+          {products.map((p) => {
+            const on = ticked.has(String(p.id));
+            const full = p.variants[0]?.price ?? p.price;
+            const deal = off ? Math.round(full * (100 - off)) / 100 : full;
+            return (
+              <button
+                key={p.id}
+                type="button"
+                role="checkbox"
+                aria-checked={on}
+                onClick={() => onTick(p, !on)}
+                className="flex shrink-0 items-center gap-3 rounded-xl text-left"
+                style={{ height: ROW_H }}
+              >
+                <span
+                  className="flex size-[18px] shrink-0 items-center justify-center rounded-[4px] border transition-colors"
+                  style={on ? { background: accent, borderColor: accent, color: textOn(accent) } : { borderColor: "#a3a3a3", background: "#fff" }}
+                >
+                  {on && <Check className="size-3.5" strokeWidth={3} />}
+                </span>
+                <span className="size-14 shrink-0 overflow-hidden rounded-lg border bg-white transition-colors" style={{ borderColor: on ? accent : "#e5e5e5" }}>
+                  <DemoImg src={p.variants[0]?.image ?? p.images[0]} alt={p.title} className="size-full object-cover" />
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="line-clamp-1 block text-[14px] font-medium">{p.title}</span>
+                  <span className="mt-0.5 block text-[14px] font-semibold tabular-nums">
+                    <span className={off ? "text-[#3f7d4f]" : ""}>{fmt(deal)}</span>
+                    {off ? <s className="ml-2 font-normal text-neutral-400">{fmt(full)}</s> : null}
+                  </span>
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      ) : (
+        <div className="-mx-1 mt-4 flex snap-x gap-4 overflow-x-auto px-1 pb-2">
+          {products.map((p) => (
+            <SuggestCard key={p.id} product={p} accent={accent} fmt={fmt} off={off} onBuy={(variant, qty) => onBuy(p, variant, qty)} />
+          ))}
+        </div>
+      )}
     </div>
   );
 }
