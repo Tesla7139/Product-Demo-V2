@@ -27,28 +27,47 @@ import { AnimatePresence, motion } from "framer-motion";
 const APP_URL = "https://apps.shopify.com/clickpost-order-edit-cancel";
 const BLUE = "#155FFF";
 const OUTFIT = "#7c5cff";
+/** the store's header (logo, name) stays clear of the spotlight's shadow the whole film */
+const HEADER_CLEAR = "linear-gradient(to bottom, transparent 0, transparent var(--cp-head), #000 calc(var(--cp-head) + 36px))";
 const PRIYA = { first: "Priya", last: "Sharma", email: "priya.sharma@gmail.com" };
 
 type Rect = { top: number; left: number; width: number; height: number };
-type Mood = "happy" | "breezy" | "worried" | "relieved";
-type Pose = "wave" | "phone" | "point";
+type Mood = "happy" | "breezy" | "worried" | "relieved" | "crying";
+type Pose = "wave" | "phone" | "point" | "show";
 type Reply = { id?: number; ev?: string; ok?: boolean; rect?: Rect | null };
 
 class Cancelled extends Error {}
 
 /* --------------------------------- voice --------------------------------- */
 
-// natural-sounding voices first (Edge's online voices, Chrome's Google voice, macOS)
-const VOICES = ["Aria Online", "Jenny Online", "Ava Online", "Google US English", "Samantha", "Ava", "Allison", "Zira", "Google UK English Female"];
+// one warm female narrator: neural voices first (Edge's "Natural", macOS Premium/Enhanced),
+// then Chrome's Google voice; the robotic Windows desktop voices (David, Mark, Zira) never
+const NATURAL = /\b(Ava|Emma|Jenny|Aria|Michelle|Sonia|Libby|Natasha)\b.*(Natural|Online)|(Ava|Zoe|Samantha|Allison|Serena)\b.*(Premium|Enhanced)/i;
+const PREFERRED = ["Google US English", "Google UK English Female", "Samantha", "Karen", "Moira", "Tessa"];
+const ROBOTIC = /\b(David|Mark|Zira|Hazel|George|Fred|Albert|Bad News|Bells|Boing|Bubbles|Cellos|Wobble|Whisper|Zarvox|Trinoids|Junior|Ralph)\b/i;
 
-function pickVoice(): SpeechSynthesisVoice | null {
-  if (typeof window === "undefined" || !("speechSynthesis" in window)) return null;
-  const all = window.speechSynthesis.getVoices();
-  for (const name of VOICES) {
-    const v = all.find((x) => x.name.includes(name));
-    if (v) return v;
-  }
-  return all.find((v) => /^en(-|_)US/i.test(v.lang)) ?? all.find((v) => /^en/i.test(v.lang)) ?? null;
+function pickVoice(all: SpeechSynthesisVoice[]): SpeechSynthesisVoice | null {
+  const en = all.filter((v) => /^en[-_]/i.test(v.lang));
+  return (
+    en.find((v) => NATURAL.test(v.name)) ??
+    PREFERRED.map((n) => en.find((v) => v.name.includes(n))).find(Boolean) ??
+    en.find((v) => /^en[-_]US/i.test(v.lang) && !ROBOTIC.test(v.name)) ??
+    en.find((v) => !ROBOTIC.test(v.name)) ??
+    null
+  );
+}
+
+/** the browser fills its voice list late (Chrome: after the first getVoices call) */
+function loadVoice(): Promise<SpeechSynthesisVoice | null> {
+  if (typeof window === "undefined" || !("speechSynthesis" in window)) return Promise.resolve(null);
+  const synth = window.speechSynthesis;
+  const now = synth.getVoices();
+  if (now.length) return Promise.resolve(pickVoice(now));
+  return new Promise((resolve) => {
+    const done = () => { synth.removeEventListener("voiceschanged", done); window.clearTimeout(t); resolve(pickVoice(synth.getVoices())); };
+    const t = window.setTimeout(done, 1500);
+    synth.addEventListener("voiceschanged", done);
+  });
 }
 
 /** about how long a line takes to say (and to read, when the voice is off) */
@@ -56,87 +75,145 @@ const lineMs = (text: string) => Math.max(1700, text.split(/\s+/).length * 340 +
 
 /* --------------------------------- Priya --------------------------------- */
 
-/** Priya: a flat illustrated shopper whose face follows the story. */
+const SKIN = "#d39a74";
+const SKIN_SHADE = "#c98d68";
+const HAIR = "#22140f";
+const EASE = "cubic-bezier(.34,1.3,.5,1)";
+
+/** [upper arm, forearm] angles in degrees: 0 hangs straight down, the forearm turns at the elbow */
+const ARMS: Record<Pose, { r: [number, number]; l: [number, number] }> = {
+  wave: { r: [-125, -35], l: [38, -95] },
+  phone: { r: [16, 110], l: [-16, -110] },
+  point: { r: [-98, -4], l: [38, -95] },
+  // holds her phone up beside her, screen to the camera
+  show: { r: [-40, -60], l: [38, -95] },
+};
+
+const turn = (deg: number, x: number, y: number, ms = 520): React.CSSProperties => ({
+  transform: `rotate(${deg}deg)`,
+  transformOrigin: `${x}px ${y}px`,
+  transition: `transform ${ms}ms ${EASE}`,
+});
+
+/** a jointed arm: sleeve to the elbow, forearm, hand (with a finger out when pointing) */
+function Arm({ x, y, angles, wave, finger }: { x: number; y: number; angles: [number, number]; wave?: boolean; finger?: boolean }) {
+  const ex = x;
+  const ey = y + 30;
+  return (
+    <g style={turn(angles[0], x, y)}>
+      <g style={turn(angles[1], ex, ey, 600)}>
+        <g className={wave ? "cp-priya-wave" : undefined} style={{ transformOrigin: `${ex}px ${ey}px` }}>
+          <line x1={ex} y1={ey} x2={ex} y2={ey + 25} stroke={SKIN} strokeWidth="11" strokeLinecap="round" />
+          <circle cx={ex} cy={ey + 29} r="7.5" fill={SKIN} />
+          <line x1={ex} y1={ey + 32} x2={ex} y2={ey + 41} stroke={SKIN} strokeWidth="4.5" strokeLinecap="round" style={{ opacity: finger ? 1 : 0, transition: "opacity .3s" }} />
+        </g>
+      </g>
+      <line x1={x} y1={y} x2={ex} y2={ey} stroke={OUTFIT} strokeWidth="16" strokeLinecap="round" />
+      <circle cx={ex} cy={ey} r="6" fill={OUTFIT} />
+    </g>
+  );
+}
+
+/** Priya: a flat illustrated shopper whose face and body follow the story. */
 function Shopper({ mood, pose }: { mood: Mood; pose: Pose }) {
   const brows: Record<Mood, string> = {
     happy: "M68 91 q8 -6 16 0 M104 91 q8 -6 16 0",
     breezy: "M68 92 q8 -4 16 0 M104 92 q8 -4 16 0",
     worried: "M68 89 q8 4 16 -2 M104 87 q8 -6 16 2",
     relieved: "M68 89 q8 -8 16 0 M104 89 q8 -8 16 0",
+    crying: "M68 87 q8 6 16 -1 M104 86 q8 -7 16 1",
   };
   const mouth: Record<Mood, string> = {
     happy: "M84 126 q10 10 20 0",
     breezy: "M86 126 q8 5 16 0",
     worried: "M85 131 q9 -9 18 0",
     relieved: "M80 123 q14 16 28 0 z",
+    crying: "M83 133 q5 -9 11 -4 q5 -5 11 4 q-11 5 -22 0z",
   };
-  const look = mood === "breezy" ? { x: -2, y: 5 } : mood === "worried" ? { x: 3, y: -1 } : { x: 0, y: 0 };
-  const armRotate = pose === "wave" ? [0, -22, 6, -22, 0] : pose === "point" ? -58 : 0;
+  const look = mood === "crying" ? { x: 0, y: 3 } : pose === "show" ? { x: 3, y: 0 } : pose === "phone" ? { x: 0, y: 5 } : pose === "point" ? { x: 4, y: 0 } : mood === "worried" ? { x: 3, y: -1 } : { x: 0, y: 0 };
+  const tilt = mood === "crying" ? -7 : pose === "show" ? -4 : pose === "phone" ? 6 : mood === "worried" ? -5 : pose === "point" ? 4 : mood === "relieved" ? -3 : 0;
+  const lean = pose === "point" ? 2.5 : 0;
+  const arms = ARMS[pose];
+  const head = turn(tilt, 95, 142, 700);
+  const eye: React.CSSProperties = { transition: "all .4s" };
   return (
     <svg viewBox="0 0 190 300" className="h-full w-full overflow-visible" aria-hidden>
+      <style>{`
+        @keyframes cp-priya-wave { 0%,100% { transform: rotate(-16deg) } 50% { transform: rotate(22deg) } }
+        .cp-priya-wave { animation: cp-priya-wave .55s ease-in-out infinite; }
+        @keyframes cp-priya-breathe { 0%,100% { transform: scaleY(1) } 50% { transform: scaleY(1.015) } }
+        .cp-priya-breathe { animation: cp-priya-breathe 3.2s ease-in-out infinite; transform-origin: 95px 290px; }
+      `}</style>
       <ellipse cx="95" cy="292" rx="58" ry="7" fill="rgba(0,0,0,.25)" />
-      {/* long hair, behind */}
-      <path d="M50 104 q-4 -52 45 -52 q49 0 45 52 v70 q-10 10 -20 0 v-56 h-50 v56 q-10 10 -20 0z" fill="#22140f" />
-      {/* legs + shoes */}
-      <rect x="70" y="214" width="21" height="70" rx="9" fill="#1d2741" />
-      <rect x="99" y="214" width="21" height="70" rx="9" fill="#1d2741" />
-      <path d="M64 284 h29 v8 h-33 q0 -8 4 -8z" fill="#fff" />
-      <path d="M97 284 h29 q4 0 4 8 h-33z" fill="#fff" />
-      {/* top */}
-      <path d="M52 168 q0 -26 43 -26 q43 0 43 26 v54 q0 8 -8 8 h-70 q-8 0 -8 -8z" fill={OUTFIT} />
-      <path d="M78 143 q17 14 34 0" fill="none" stroke="#5b3fe0" strokeWidth="5" strokeLinecap="round" />
-      <rect x="72" y="196" width="46" height="6" rx="3" fill="#5b3fe0" opacity=".6" />
-      {/* arm with the phone */}
-      <path d="M56 170 q-14 22 -6 44" fill="none" stroke={OUTFIT} strokeWidth="17" strokeLinecap="round" />
-      <circle cx="52" cy="214" r="9" fill="#c98d68" />
-      <g transform="rotate(-12 52 204)">
-        <rect x="38" y="186" width="26" height="40" rx="5" fill="#111827" />
-        <rect x="41" y="190" width="20" height="30" rx="3" fill={mood === "worried" ? "#fecaca" : "#d9d2ff"} />
+      <g style={turn(lean, 95, 290, 700)}>
+        <g className="cp-priya-breathe">
+          {/* long hair, behind */}
+          <g style={head}>
+            <path d="M50 104 q-4 -52 45 -52 q49 0 45 52 v66 q-10 10 -20 0 v-52 h-50 v52 q-10 10 -20 0z" fill={HAIR} />
+          </g>
+          {/* legs + shoes */}
+          <rect x="70" y="214" width="21" height="70" rx="9" fill="#1d2741" />
+          <rect x="99" y="214" width="21" height="70" rx="9" fill="#1d2741" />
+          <path d="M64 284 h29 v8 h-33 q0 -8 4 -8z" fill="#fff" />
+          <path d="M97 284 h29 q4 0 4 8 h-33z" fill="#fff" />
+          {/* top */}
+          <path d="M54 170 q0 -28 41 -28 q41 0 41 28 v52 q0 8 -8 8 h-66 q-8 0 -8 -8z" fill={OUTFIT} />
+          <path d="M78 143 q17 14 34 0" fill="none" stroke="#5b3fe0" strokeWidth="5" strokeLinecap="round" />
+          <rect x="72" y="196" width="46" height="6" rx="3" fill="#5b3fe0" opacity=".6" />
+          {/* neck + head */}
+          <g style={head}>
+            <rect x="86" y="126" width="18" height="20" rx="6" fill="#b97f5c" />
+            <circle cx="95" cy="104" r="40" fill={SKIN} />
+            <circle cx="56" cy="110" r="6" fill={SKIN_SHADE} />
+            <circle cx="134" cy="110" r="6" fill={SKIN_SHADE} />
+            <circle cx="56" cy="120" r="3" fill="#facc15" />
+            <circle cx="134" cy="120" r="3" fill="#facc15" />
+            <path d="M55 98 q4 -40 40 -42 q36 2 40 42 q-12 -20 -40 -24 q-28 4 -40 24z" fill={HAIR} />
+            <circle cx="95" cy="88" r="2.4" fill="#e11d48" opacity=".85" />
+            {/* eyes blink every few seconds */}
+            <motion.g animate={{ scaleY: [1, 1, 0.1, 1, 1] }} transition={{ duration: 4, repeat: Infinity, times: [0, 0.9, 0.93, 0.96, 1] }} style={{ originY: "104px" }}>
+              <ellipse cx={76 + look.x} cy={105 + look.y} rx="5" ry="6" fill="#1b1b1b" style={eye} />
+              <ellipse cx={112 + look.x} cy={105 + look.y} rx="5" ry="6" fill="#1b1b1b" style={eye} />
+              <circle cx={78 + look.x} cy={102 + look.y} r="1.6" fill="#fff" style={eye} />
+              <circle cx={114 + look.x} cy={102 + look.y} r="1.6" fill="#fff" style={eye} />
+            </motion.g>
+            <motion.path d={brows[mood]} fill="none" stroke={HAIR} strokeWidth="3.5" strokeLinecap="round" animate={{ d: brows[mood] }} />
+            <circle cx="66" cy="120" r="6" fill="#f472b6" opacity=".35" />
+            <circle cx="124" cy="120" r="6" fill="#f472b6" opacity=".35" />
+            <motion.path d={mouth[mood]} animate={{ d: mouth[mood] }} fill={mood === "relieved" || mood === "crying" ? "#7f1d1d" : "none"} stroke="#7f1d1d" strokeWidth="3.5" strokeLinecap="round" strokeLinejoin="round" />
+            {/* tears: streaks down both cheeks, drops falling */}
+            {mood === "crying" &&
+              [76, 112].map((x, i) => (
+                <g key={x}>
+                  <motion.path d={`M${x} 112 q${i ? 3 : -3} 12 ${i ? 1 : -1} 26`} fill="none" stroke="#7cc4ff" strokeWidth="4" strokeLinecap="round" initial={{ pathLength: 0, opacity: 0 }} animate={{ pathLength: 1, opacity: 0.9 }} transition={{ duration: 0.7, delay: i * 0.15 }} />
+                  <motion.circle cx={x + (i ? 1 : -1)} cy="140" r="3.2" fill="#7cc4ff" animate={{ cy: [138, 170], opacity: [1, 0] }} transition={{ duration: 0.9, repeat: Infinity, delay: 0.6 + i * 0.4 }} />
+                </g>
+              ))}
+            {(mood === "worried" || mood === "crying") && (
+              <motion.path d="M136 78 q6 10 0 14 q-6 -4 0 -14z" fill="#7cc4ff" initial={{ opacity: 0, y: -6 }} animate={{ opacity: [0, 1, 1, 0], y: [-6, 0, 10, 16] }} transition={{ duration: 1.6, repeat: Infinity }} />
+            )}
+          </g>
+          {/* the phone, held in both hands in front of her */}
+          <g style={{ opacity: pose === "phone" ? 1 : 0, transform: pose === "phone" ? "translateY(0px)" : "translateY(14px)", transition: `opacity .35s, transform .45s ${EASE}` }}>
+            <rect x="82" y="150" width="26" height="42" rx="5" fill="#111827" />
+            <rect x="85" y="154" width="20" height="32" rx="3" fill={mood === "worried" ? "#fecaca" : "#d9d2ff"} style={{ transition: "fill .4s" }} />
+          </g>
+          {/* arms */}
+          <Arm x={60} y={164} angles={arms.l} />
+          <Arm x={130} y={164} angles={arms.r} wave={pose === "wave"} finger={pose === "point"} />
+          {mood === "relieved" &&
+            [[40, 62], [150, 58], [158, 96]].map(([x, y], i) => (
+              <motion.path
+                key={i}
+                d={`M${x} ${y - 7} l2 5 l5 2 l-5 2 l-2 5 l-2 -5 l-5 -2 l5 -2z`}
+                fill="#facc15"
+                animate={{ scale: [0.6, 1.15, 0.6], opacity: [0.5, 1, 0.5] }}
+                transition={{ duration: 1.2, repeat: Infinity, delay: i * 0.25 }}
+                style={{ originX: `${x}px`, originY: `${y}px` }}
+              />
+            ))}
+        </g>
       </g>
-      {/* the other arm: waves, points, rests */}
-      <motion.g
-        style={{ originX: "134px", originY: "164px" }}
-        animate={{ rotate: armRotate }}
-        transition={pose === "wave" ? { duration: 1.4, repeat: Infinity, repeatDelay: 0.6 } : { type: "spring", stiffness: 120, damping: 12 }}
-      >
-        <path d="M134 168 q16 22 8 46" fill="none" stroke={OUTFIT} strokeWidth="17" strokeLinecap="round" />
-        <circle cx="141" cy="216" r="9" fill="#c98d68" />
-      </motion.g>
-      {/* head */}
-      <rect x="86" y="128" width="18" height="18" rx="6" fill="#b97f5c" />
-      <circle cx="95" cy="104" r="40" fill="#d39a74" />
-      <circle cx="56" cy="110" r="6" fill="#c98d68" />
-      <circle cx="134" cy="110" r="6" fill="#c98d68" />
-      <circle cx="56" cy="120" r="3" fill="#facc15" />
-      <circle cx="134" cy="120" r="3" fill="#facc15" />
-      {/* fringe */}
-      <path d="M55 98 q4 -40 40 -42 q36 2 40 42 q-12 -20 -40 -24 q-28 4 -40 24z" fill="#22140f" />
-      <circle cx="95" cy="88" r="2.4" fill="#e11d48" opacity=".85" />
-      {/* eyes blink every few seconds */}
-      <motion.g animate={{ scaleY: [1, 1, 0.1, 1, 1] }} transition={{ duration: 4, repeat: Infinity, times: [0, 0.9, 0.93, 0.96, 1] }} style={{ originY: "104px" }}>
-        <ellipse cx={76 + look.x} cy={105 + look.y} rx="5" ry="6" fill="#1b1b1b" />
-        <ellipse cx={112 + look.x} cy={105 + look.y} rx="5" ry="6" fill="#1b1b1b" />
-        <circle cx={78 + look.x} cy={102 + look.y} r="1.6" fill="#fff" />
-        <circle cx={114 + look.x} cy={102 + look.y} r="1.6" fill="#fff" />
-      </motion.g>
-      <motion.path d={brows[mood]} fill="none" stroke="#22140f" strokeWidth="3.5" strokeLinecap="round" animate={{ d: brows[mood] }} />
-      <circle cx="66" cy="120" r="6" fill="#f472b6" opacity=".35" />
-      <circle cx="124" cy="120" r="6" fill="#f472b6" opacity=".35" />
-      <motion.path d={mouth[mood]} animate={{ d: mouth[mood] }} fill={mood === "relieved" ? "#7f1d1d" : "none"} stroke="#7f1d1d" strokeWidth="3.5" strokeLinecap="round" strokeLinejoin="round" />
-      {mood === "worried" && (
-        <motion.path d="M136 78 q6 10 0 14 q-6 -4 0 -14z" fill="#7cc4ff" initial={{ opacity: 0, y: -6 }} animate={{ opacity: [0, 1, 1, 0], y: [-6, 0, 10, 16] }} transition={{ duration: 1.6, repeat: Infinity }} />
-      )}
-      {mood === "relieved" &&
-        [[40, 62], [150, 58], [158, 96]].map(([x, y], i) => (
-          <motion.path
-            key={i}
-            d={`M${x} ${y - 7} l2 5 l5 2 l-5 2 l-2 5 l-2 -5 l-5 -2 l5 -2z`}
-            fill="#facc15"
-            animate={{ scale: [0.6, 1.15, 0.6], opacity: [0.5, 1, 0.5] }}
-            transition={{ duration: 1.2, repeat: Infinity, delay: i * 0.25 }}
-            style={{ originX: `${x}px`, originY: `${y}px` }}
-          />
-        ))}
     </svg>
   );
 }
@@ -347,11 +424,102 @@ function Truck() {
 
 /* -------------------------------- the film -------------------------------- */
 
+/** the store, as Priya sees it on her phone */
+function StorePhone({ store, logo, product }: { store: string; logo: string | null; product: { title: string; image: string | null } | null }) {
+  return (
+    <div className="relative h-full w-full rounded-[16%/7.6%] bg-[#0b0d12] p-[4.5%] shadow-[0_30px_80px_rgba(0,0,0,.55)] ring-1 ring-white/15">
+      <div className="relative flex h-full w-full flex-col overflow-hidden rounded-[12%/5.6%] bg-white text-neutral-900">
+        <span className="absolute left-1/2 top-[1.6%] z-10 h-[3.2%] w-[32%] -translate-x-1/2 rounded-full bg-black" />
+        <div className="flex h-[17%] shrink-0 items-end justify-center border-b border-neutral-200 px-[8%] pb-[4%]">
+          {logo ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img src={logo} alt="" className="max-h-[52%] max-w-full object-contain" />
+          ) : (
+            <span className="truncate text-[11px] font-extrabold uppercase tracking-[0.14em]">{store}</span>
+          )}
+        </div>
+        <div className="relative aspect-square w-full shrink-0 bg-neutral-100">
+          {product?.image && (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img src={product.image} alt="" className="absolute inset-0 h-full w-full object-cover" />
+          )}
+        </div>
+        <div className="flex min-h-0 flex-1 flex-col gap-[6%] px-[7%] pt-[6%]">
+          <div className="line-clamp-2 text-[10px] font-semibold leading-tight">{product?.title || store}</div>
+          <div className="flex h-[22%] min-h-[18px] items-center justify-center rounded-md border border-neutral-900 text-[9px] font-semibold">Add to cart</div>
+          <div className="flex h-[22%] min-h-[18px] items-center justify-center gap-1 rounded-md bg-[#5a31f4] text-[9px] font-semibold text-white">
+            Buy with <span className="text-[11px] font-black tracking-tight">shop</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** 1 · Priya alone at center, showing the store on her phone; then the phone zooms into the real site */
+function Intro({ zoom, gift, store, logo, product }: { zoom: boolean; gift: boolean; store: string; logo: string | null; product: { title: string; image: string | null } | null }) {
+  // --ph: Priya's height; she and the phone share one box, centered
+  const box = { "--ph": "min(54vh, 480px)", height: "var(--ph)", width: "calc(var(--ph) * 0.83)" } as React.CSSProperties;
+  return (
+    <motion.div className="absolute inset-0" exit={{ opacity: 0 }} transition={{ duration: 0.3 }}>
+      <motion.div
+        className="absolute inset-0"
+        style={{ background: "radial-gradient(ellipse at 50% 55%, #1c2547 0%, #070a16 72%)" }}
+        initial={{ opacity: 0 }}
+        animate={{ opacity: zoom ? 0 : 1 }}
+        transition={{ duration: zoom ? 0.9 : 0.5, delay: zoom ? 0.25 : 0 }}
+      />
+      <div className="absolute bottom-[calc(15vh+3vh)] left-1/2 -translate-x-1/2" style={box}>
+        {/* Priya */}
+        <motion.div
+          className="absolute bottom-0 left-0 h-full"
+          style={{ width: "calc(var(--ph) * 0.633)" }}
+          initial={{ y: 50, opacity: 0 }}
+          animate={zoom ? { y: 40, opacity: 0 } : { y: 0, opacity: 1 }}
+          transition={zoom ? { duration: 0.45 } : { type: "spring", stiffness: 90, damping: 15 }}
+        >
+          <Shopper mood="happy" pose="show" />
+          <AnimatePresence>
+            {gift && (
+              <motion.div
+                key="gift"
+                className="absolute -left-[46%] top-[0%] flex size-24 items-center justify-center rounded-full bg-white shadow-2xl"
+                initial={{ scale: 0, opacity: 0 }}
+                animate={{ scale: 1, opacity: 1 }}
+                exit={{ scale: 0, opacity: 0 }}
+                transition={{ type: "spring", stiffness: 260, damping: 16 }}
+              >
+                <GiftIcon className="size-14" />
+                <span className="absolute -bottom-3 right-3 size-5 rounded-full bg-white" />
+                <span className="absolute -bottom-7 right-0 size-3 rounded-full bg-white" />
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </motion.div>
+        {/* her phone, held up beside her: it becomes the site */}
+        <motion.div
+          className="absolute"
+          style={{ left: "calc(var(--ph) * 0.55)", top: "calc(var(--ph) * 0.12)", width: "calc(var(--ph) * 0.275)", height: "calc(var(--ph) * 0.58)" }}
+          initial={{ opacity: 0, scale: 0.5, rotate: 8 }}
+          animate={zoom ? { opacity: [1, 1, 0], scale: 7, rotate: 0 } : { opacity: 1, scale: 1, rotate: 3 }}
+          transition={zoom ? { duration: 1.1, ease: [0.7, 0, 0.3, 1], opacity: { duration: 1.1, times: [0, 0.6, 1] } } : { delay: 0.35, type: "spring", stiffness: 180, damping: 16 }}
+        >
+          <StorePhone store={store} logo={logo} product={product} />
+          {/* her fingers round the edge */}
+          <span className="absolute -left-[9%] top-[74%] h-[9%] w-[24%] rounded-full" style={{ background: SKIN }} />
+        </motion.div>
+      </div>
+    </motion.div>
+  );
+}
+
 export function StoryTour({
-  frame, store, onEnd, onReplay,
+  frame, store, logo, onEnd, onReplay,
 }: {
   frame: React.RefObject<HTMLIFrameElement | null>;
   store: string;
+  /** the store's logo, for the site on Priya's phone */
+  logo?: string | null;
   /** the story is over (or skipped): back to the live demo */
   onEnd: () => void;
   /** reload the store's checkout and play again */
@@ -362,6 +530,14 @@ export function StoryTour({
   const [pose, setPose] = useState<Pose>("wave");
   const [onStage, setOnStage] = useState(false);
   const [gift, setGift] = useState(false);
+  /** the opening: Priya alone at center with the store on her phone, then the phone zooms into the site */
+  const [intro, setIntro] = useState<"off" | "on" | "zoom">("off");
+  const [product] = useState<{ title: string; image: string | null } | null>(() => {
+    try {
+      const it = JSON.parse(sessionStorage.getItem("cp-cart") || "null")?.items?.[0];
+      return it ? { title: String(it.title || ""), image: it.image || null } : null;
+    } catch { return null; }
+  });
   const [spot, setSpot] = useState<Rect | null>(null);
   const [stamp, setStamp] = useState<Rect | null>(null);
   const [pointer, setPointer] = useState<{ x: number; y: number; tap: number } | null>(null);
@@ -374,6 +550,25 @@ export function StoryTour({
   const [muted, setMuted] = useState(false);
   const mutedRef = useRef(false);
   const seq = useRef(0);
+
+  // where the store's header ends in the frame: nothing in the film ever covers it
+  const [head, setHead] = useState(84);
+  useEffect(() => {
+    const measure = () => {
+      try {
+        const h = frame.current?.contentDocument?.querySelector<HTMLElement>("header, [role=banner]");
+        // pinned, so the store's name stays on screen even when the page scrolls
+        if (h && !h.dataset.cpPinned) {
+          h.dataset.cpPinned = "1";
+          Object.assign(h.style, { position: "sticky", top: "0px", zIndex: "60" });
+        }
+        if (h) setHead(Math.max(0, Math.round(h.getBoundingClientRect().bottom)));
+      } catch { /* not ready */ }
+    };
+    measure();
+    const t = window.setInterval(measure, 400);
+    return () => window.clearInterval(t);
+  }, [frame]);
 
   useEffect(() => { mutedRef.current = muted; if (muted) window.speechSynthesis?.cancel(); }, [muted]);
 
@@ -405,27 +600,44 @@ export function StoryTour({
     const check = () => { if (token.cancelled) throw new Cancelled(); };
     const wait = (ms: number) => new Promise<void>((r) => window.setTimeout(r, ms)).then(check);
 
+    const voiceReady = loadVoice();
+
+    /** one sentence, spoken; resolves when it has finished (never cut short mid-word) */
+    const speak = (synth: SpeechSynthesis, voice: SpeechSynthesisVoice | null, text: string) =>
+      new Promise<void>((resolve) => {
+        const u = new SpeechSynthesisUtterance(text);
+        if (voice) { u.voice = voice; u.lang = voice.lang; }
+        u.rate = 0.98;
+        let settled = false;
+        const end = () => { if (!settled) { settled = true; window.clearTimeout(guard); resolve(); } };
+        // if speech never starts (no voices, a background tab), fall back to reading time;
+        // once it has started, give it plenty of room to finish
+        let guard = window.setTimeout(end, 2500);
+        u.onstart = () => { window.clearTimeout(guard); guard = window.setTimeout(end, lineMs(text) * 2 + 4000); };
+        u.onend = end;
+        u.onerror = end;
+        synth.speak(u);
+      });
+
     /** a subtitle, said aloud: resolves once it has been said (or read) */
-    const say = (text: string) => {
+    const say = async (text: string) => {
       check();
       setCaption(text);
       const synth = typeof window !== "undefined" ? window.speechSynthesis : undefined;
-      if (!synth || mutedRef.current) return wait(lineMs(text));
-      return new Promise<void>((resolve) => {
-        const u = new SpeechSynthesisUtterance(text.replace(/RTO/g, "R.T.O."));
-        const v = pickVoice();
-        if (v) u.voice = v;
-        u.rate = 1.04;
-        u.pitch = 1.05;
-        let settled = false;
-        const end = () => { if (!settled) { settled = true; window.clearTimeout(guard); resolve(); } };
-        // speech can stall (no voices, a background tab): never wait past reading time
-        const guard = window.setTimeout(end, lineMs(text) + 2500);
-        u.onend = end;
-        u.onerror = end;
-        synth.cancel();
-        synth.speak(u);
-      }).then(() => wait(220));
+      const voice = synth ? await voiceReady : null;
+      check();
+      if (!synth || !voice || mutedRef.current) return wait(lineMs(text));
+      const started = Date.now();
+      synth.cancel();
+      // sentence by sentence: natural pauses, and Chrome stops utterances longer than ~15s
+      for (const part of text.match(/[^.!?:]+[.!?:]*/g) ?? [text]) {
+        if (mutedRef.current) break;
+        await speak(synth, voice, part.trim().replace(/\bRTOs\b/g, "R T Os").replace(/\bRTO\b/g, "R T O"));
+        check();
+      }
+      // muted mid-line: still leave the caption up long enough to read
+      const left = lineMs(text) - (Date.now() - started);
+      await wait(mutedRef.current && left > 0 ? left : 240);
     };
 
     const rect = async (what: string) => { const r = await send({ do: "rect", what }, 4000); check(); return r.rect ?? null; };
@@ -443,15 +655,17 @@ export function StoryTour({
         check();
         await wait(250);
 
-        /* 1–2 · the gift, the one-tap checkout */
-        setOnStage(true);
-        await wait(700);
+        /* 1–2 · Priya, the store on her phone; the phone becomes the site */
+        setIntro("on");
+        await wait(1100);
         await say(`This is Priya. She's shopping at ${store}.`);
         setGift(true);
         await say("She's buying a gift for her sister's birthday.");
         setGift(false);
+        setIntro("zoom");
+        await wait(1200);
+        setIntro("off");
 
-        setPose("phone");
         setSpot(await rect("express"));
         await say("She hits express checkout. One tap.");
         const sp = await rect("shoppay");
@@ -490,8 +704,15 @@ export function StoryTour({
         await thanks;
         check();
         await wait(600);
-        setMood("worried");
+        // she's back: the order went wrong
+        setMood("crying");
+        setPose("phone");
+        setOnStage(true);
+        await wait(800);
         await say("Five minutes later, she notices. And she panics.");
+        await wait(500);
+        setOnStage(false);
+        await wait(500);
 
         /* 3b · it's not just gifts */
         for (let i = 0; i < CUTS.length; i += 1) {
@@ -571,8 +792,8 @@ export function StoryTour({
     : "rgba(4,8,22,0.18)";
 
   return (
-    <div className="absolute inset-0 z-40 overflow-hidden">
-      <motion.div className="pointer-events-none absolute inset-0" animate={{ background: vignette }} transition={{ duration: 0.6, ease: "easeInOut" }} />
+    <div className="absolute inset-0 z-40 overflow-hidden" style={{ "--cp-head": `${head}px` } as React.CSSProperties}>
+      <motion.div className="pointer-events-none absolute inset-0" style={{ maskImage: HEADER_CLEAR, WebkitMaskImage: HEADER_CLEAR }} animate={{ background: vignette }} transition={{ duration: 0.6, ease: "easeInOut" }} />
 
       {/* "not her sister's" stamp on the auto-filled address */}
       <AnimatePresence>
@@ -612,6 +833,12 @@ export function StoryTour({
         )}
       </AnimatePresence>
 
+      {/* the full-screen scenes play below the store's header */}
+      <div className="absolute inset-x-0 bottom-0 overflow-hidden" style={{ top: head }}>
+      {/* 1 · the opening: Priya and her phone */}
+      <AnimatePresence>
+        {intro !== "off" && <Intro key="intro" zoom={intro === "zoom"} gift={gift} store={store} logo={logo ?? null} product={product} />}
+      </AnimatePresence>
       {/* 3b · the montage */}
       <AnimatePresence>
         {cut !== null && (
@@ -635,9 +862,9 @@ export function StoryTour({
       {/* 6–7 · the vault, the truck */}
       <AnimatePresence>{vault !== "off" && <Vault key="vault" open={vault === "open"} />}</AnimatePresence>
       {truck && !finale && <Truck />}
+      </div>
 
       {/* letterbox */}
-      <motion.div className="absolute inset-x-0 top-0 h-[7vh] bg-black" initial={{ y: "-100%" }} animate={{ y: 0 }} transition={{ duration: 0.6, ease: [0.16, 1, 0.3, 1] }} />
       <motion.div className="absolute inset-x-0 bottom-0 h-[15vh] min-h-[96px] bg-black" initial={{ y: "100%" }} animate={{ y: 0 }} transition={{ duration: 0.6, ease: [0.16, 1, 0.3, 1] }} />
 
       {/* Priya */}
@@ -647,29 +874,13 @@ export function StoryTour({
         animate={onStage && !finale ? { x: 0 } : { x: "-140%" }}
         transition={{ type: "spring", stiffness: 70, damping: 14 }}
       >
-        <AnimatePresence>
-          {gift && (
-            <motion.div
-              key="gift"
-              className="absolute -right-[64%] top-[2%] flex size-24 items-center justify-center rounded-full bg-white shadow-2xl"
-              initial={{ scale: 0, opacity: 0 }}
-              animate={{ scale: 1, opacity: 1 }}
-              exit={{ scale: 0, opacity: 0 }}
-              transition={{ type: "spring", stiffness: 260, damping: 16 }}
-            >
-              <GiftIcon className="size-14" />
-              <span className="absolute -bottom-3 left-3 size-5 rounded-full bg-white" />
-              <span className="absolute -bottom-7 left-0 size-3 rounded-full bg-white" />
-            </motion.div>
-          )}
-        </AnimatePresence>
         <motion.div className="h-full w-full" animate={{ y: [0, -5, 0] }} transition={{ duration: 2.4, repeat: Infinity, ease: "easeInOut" }}>
           <Shopper mood={mood} pose={pose} />
         </motion.div>
       </motion.div>
 
       {/* subtitles */}
-      <div className="pointer-events-none absolute inset-x-0 bottom-0 flex h-[15vh] min-h-[96px] items-center justify-center pl-[min(240px,30vh)] pr-6">
+      <div className="pointer-events-none absolute inset-x-0 bottom-0 flex h-[15vh] min-h-[96px] items-center justify-center pl-[min(240px,30vh)] pr-[210px]">
         <AnimatePresence mode="wait">
           {caption && !finale && (
             <motion.p
@@ -688,7 +899,7 @@ export function StoryTour({
       </div>
 
       {/* controls */}
-      <div className="absolute right-4 top-[calc(7vh+12px)] z-10 flex gap-2">
+      <div className="absolute bottom-[max(16px,calc(7.5vh-18px))] right-4 z-10 flex gap-2">
         <button
           onClick={() => setMuted((m) => !m)}
           className="flex h-9 items-center gap-1.5 rounded-full bg-black/70 px-3.5 text-[13px] font-semibold text-white ring-1 ring-white/20 backdrop-blur hover:bg-black/85"
@@ -702,9 +913,10 @@ export function StoryTour({
       </div>
 
       {/* 8 · end card */}
+      <div className="pointer-events-none absolute inset-x-0 bottom-0 overflow-hidden" style={{ top: head }}>
       <AnimatePresence>
         {finale && (
-          <motion.div key="finale" className="absolute inset-0 flex items-center justify-center bg-[rgba(4,8,22,.94)] p-6" initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.6 }}>
+          <motion.div key="finale" className="pointer-events-auto absolute inset-0 flex items-center justify-center bg-[rgba(4,8,22,.94)] p-6" initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.6 }}>
             <motion.div className="w-full max-w-2xl text-center" initial={{ y: 24, opacity: 0 }} animate={{ y: 0, opacity: 1 }} transition={{ delay: 0.2, duration: 0.6, ease: [0.16, 1, 0.3, 1] }}>
               <div className="text-[13px] font-bold uppercase tracking-[0.24em] text-[#7da6ff]">For {store}</div>
               <h2 className="mx-auto mt-3 max-w-xl text-[clamp(28px,4vw,48px)] font-extrabold leading-[1.08] tracking-tight text-white" style={{ fontFamily: "var(--font-fraunces), Georgia, serif" }}>
@@ -737,6 +949,7 @@ export function StoryTour({
           </motion.div>
         )}
       </AnimatePresence>
+      </div>
     </div>
   );
 }

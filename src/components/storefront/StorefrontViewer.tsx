@@ -247,6 +247,7 @@ export function StorefrontViewer({ url, onClose }: { url: string | null; onClose
                 <StoryTour
                   frame={frameRef}
                   store={brand.name || nameFromHost(host)}
+                  logo={brand.logo || null}
                   onEnd={endTour}
                   onReplay={startTour}
                 />
