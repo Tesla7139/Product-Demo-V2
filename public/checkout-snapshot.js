@@ -704,21 +704,21 @@
       // name, the old price struck beside the deal — in the checkout's own type,
       // borders and colours
       // an outer box around the heading and the cards
-      ".cp-up-own{text-align:left;padding:16px;border:1px solid " + lineColor + ";border-radius:" + cardRadius + ";background:rgba(0,0,0,.018)}" +
+      // a heading and note, then plain rows: checkbox, a bordered photo tile, the name, the deal price then the old one
+      ".cp-up-own{text-align:left}" +
       ".cp-up-own .cp-up-h{font-size:1.07em;font-weight:700;line-height:1.3}" +
-      ".cp-up-own .cp-up-note{margin-top:2px;font-size:.86em}" +
-      // a card per product inside it
-      ".cp-up-own .cp-up-list{display:flex;flex-direction:column;gap:8px;margin-top:12px}" +
-      ".cp-up-own .cp-up-pick{display:flex;align-items:center;gap:12px;padding:12px 14px;border:1px solid " + lineColor + ";border-radius:" + cardRadius + ";background:" + cardBg + ";transition:border-color .15s}" +
-      ".cp-up-own .cp-up-pick:hover{border-color:" + muted + "}" +
-      ".cp-up-own .cp-up-pick[aria-checked=true]{border-color:" + ink + "}" +
+      ".cp-up-own .cp-up-note{margin-top:2px;font-size:.9em}" +
+      ".cp-up-own .cp-up-list{display:flex;flex-direction:column;gap:14px;margin-top:14px}" +
+      ".cp-up-own .cp-up-pick{display:flex;align-items:center;gap:14px}" +
       ".cp-up-own .cp-up-box{width:20px;height:20px;border-radius:5px}" +
-      ".cp-up-own .cp-up-img{flex:none;width:52px;height:52px;border:1px solid " + lineColor + ";border-radius:8px;overflow:hidden;background:#fff}" +
+      ".cp-up-own .cp-up-img{flex:none;width:72px;height:72px;border:1px solid " + lineColor + ";border-radius:" + cardRadius + ";overflow:hidden;background:#fff;transition:border-color .15s}" +
+      ".cp-up-own .cp-up-pick:hover .cp-up-img{border-color:" + muted + "}" +
+      ".cp-up-own .cp-up-pick[aria-checked=true] .cp-up-img{border-color:" + ink + "}" +
       ".cp-up-own .cp-up-img img{width:100%;height:100%;object-fit:cover}" +
-      ".cp-up-own .cp-up-t{font-size:.95em;font-weight:700;line-height:1.3}" +
-      ".cp-up-own .cp-up-p{margin-top:3px;font-size:.95em;font-weight:700}" +
-      ".cp-up-own .cp-up-p s{margin-right:.45em;color:" + muted + ";font-weight:400}" +
-      ".cp-up-own .cp-up-p .cp-up-deal{color:#b5651d}";
+      ".cp-up-own .cp-up-t{font-size:1em;font-weight:500;line-height:1.3}" +
+      ".cp-up-own .cp-up-p{margin-top:3px;font-size:1em;font-weight:600}" +
+      ".cp-up-own .cp-up-p s{margin-left:.55em;color:" + muted + ";font-weight:400}" +
+      ".cp-up-own .cp-up-p .cp-up-deal{color:#3f7d4f}";
 
     var isMoney = function (v) { return /\d[.,]\d\d/.test(v) && /[^\d\s.,]/.test(v); };
     var isAdd = function (b) { return /^(add|select|choose|add to (cart|order))$/i.test((b.textContent || "").trim()); };
@@ -769,7 +769,7 @@
         var sale = it.compareAt > it.price;
         return "<div data-row='" + esc(it.id) + "'><span class='cp-up-img'>" + (it.image ? "<img data-cp-sharp='1' loading='lazy' alt='' src='" + esc(thumb(it.image, 200)) + "'>" : "") + "</span>" +
           "<div style='flex:1;min-width:0'><div class='cp-up-t'>" + esc(it.title) + "</div><div class='cp-up-p'>" +
-          (sale ? "<s>" + fmt(it.compareAt) + "</s><span class='cp-up-deal'>" + fmt(it.price) + "</span>" : fmt(it.price)) + "</div></div></div>";
+          (sale ? "<span class='cp-up-deal'>" + fmt(it.price) + "</span><s>" + fmt(it.compareAt) + "</s>" : fmt(it.price)) + "</div></div></div>";
       }).join("") + "</div>";
       var h = el.querySelector(".cp-up-h");
       heading(h);
@@ -812,7 +812,7 @@
       !payAt.parentElement.querySelector("input, select, textarea, [role=radio], [role=checkbox]")) payAt = payAt.parentElement;
     if (row && row.parentNode && !row.closest("aside")) {
       row.parentNode.insertBefore(box, row.nextSibling);
-      box.style.margin = "18px 0 4px";
+      box.style.margin = "26px 0 6px";
     } else if (payAt && payAt.parentNode) {
       payAt.parentNode.insertBefore(box, payAt);
       box.style.margin = "0 0 22px";
