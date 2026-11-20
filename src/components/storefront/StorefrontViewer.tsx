@@ -198,15 +198,14 @@ export function StorefrontViewer({ url, onClose }: { url: string | null; onClose
           exit={{ opacity: 0 }}
           className="fixed inset-0 z-[100] flex flex-col bg-white"
         >
-          <div className="relative flex h-12 shrink-0 items-center justify-center border-b border-neutral-200 bg-white px-3">
-            <button
-              onClick={onClose}
-              aria-label="Close"
-              className="absolute right-2 top-1/2 flex size-9 -translate-y-1/2 items-center justify-center rounded-full text-neutral-700 transition-colors hover:bg-neutral-100"
-            >
-              <X className="size-5" />
-            </button>
-          </div>
+          {/* no top strip: the site fills the screen and the close sits over it, clear of its scrollbar */}
+          <button
+            onClick={onClose}
+            aria-label="Close"
+            className="absolute right-6 top-3 z-[60] flex size-10 items-center justify-center rounded-full bg-white/95 text-neutral-800 shadow-[0_2px_10px_rgba(0,0,0,0.18)] ring-1 ring-black/10 backdrop-blur transition-colors hover:bg-white"
+          >
+            <X className="size-5" />
+          </button>
 
           <div className="relative min-h-0 flex-1">
             <div className="relative h-full w-full">
