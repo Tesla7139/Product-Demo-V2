@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { ChevronDown, CircleHelp, CreditCard, Loader2, Lock, Search, ShoppingBag } from "lucide-react";
 import { DEFAULT_ADDR, DEFAULT_EMAIL, DEFAULT_PHONE } from "@/components/sections/demo/DemoMock";
 import {
@@ -8,7 +8,9 @@ import {
   StoreFrame, StoreHeader, textOn, type Brand, type CatalogProduct, type Line,
 } from "./shared";
 import { UpsellPage } from "./UpsellPage";
+import { readDemoMode, showsEditing, showsUpsells, type DemoMode } from "@/lib/demoMode";
 import { ThankYouPage } from "./ThankYouPage";
+import { pickOffers } from "@/lib/upsell/engine";
 import type { CheckoutBranding, ExpressWallet } from "@/lib/clone/checkoutBranding";
 
 // The order flow that follows the storefront copy: checkout → post-purchase
@@ -19,7 +21,7 @@ import type { CheckoutBranding, ExpressWallet } from "@/lib/clone/checkoutBrandi
 // processing: Shopify's blank checkout frame while the order goes through
 type Stage = "checkout" | "processing" | "upsell" | "thankyou";
 
-const PROCESSING_MS = 1600;
+const PROCESSING_MS = { blank: 500, skeleton: 1000, clear: 500 };
 
 export function CheckoutFlow() {
   const [loaded, setLoaded] = useState(false);
@@ -29,6 +31,8 @@ export function CheckoutFlow() {
   const [catalogReady, setCatalogReady] = useState(false);
   const [stage, setStage] = useState<Stage>("checkout");
   const [accepted, setAccepted] = useState<Line[]>([]);
+  // order editing, upsells or both: picked on the start screen
+  const [mode, setMode] = useState<DemoMode>("both");
   const [orderNo] = useState(orderNumber);
   // the store's real checkout design (undefined while it's being read)
   const [design, setDesign] = useState<CheckoutBranding | null | undefined>(undefined);
@@ -37,6 +41,7 @@ export function CheckoutFlow() {
     const b = readSession<Brand>("cp-brand") ?? {};
     /* eslint-disable react-hooks/set-state-in-effect -- hydrate from the session the storefront copy wrote */
     setBrand(b);
+    setMode(readDemoMode());
     setCart(readSession<{ items: Line[] }>("cp-cart")?.items ?? []);
     setLoaded(true);
     // paid on the store's captured checkout (/preview/store-checkout): carry straight on
@@ -57,14 +62,35 @@ export function CheckoutFlow() {
   }, [stage]);
 
   // offers come from the catalog; without any, payment goes straight to the confirmation
-  const hasOffers = catalog.some((p) => !cart.some((l) => l.title.toLowerCase() === p.title.toLowerCase()));
+  // the upsell engine's two picks for this cart (src/lib/upsell/engine.ts)
+  const picks = useMemo(() => pickOffers(cart, catalog), [cart, catalog]);
+  const offers = useMemo(() => [picks.first, picks.last].flatMap((r) => (r ? [r.product] : [])), [picks]);
+  useEffect(() => {
+    if (!catalogReady || !cart.length) return;
+    const row = (r: (typeof picks.ranked)[number]) => ({ product: r.product.title, price: r.product.price, score: +r.score.toFixed(2), why: r.reasons.join("; ") });
+    console.info("[upsell] cart:", cart.map((l) => `${l.title} × ${l.qty} @ ${l.price}`).join(", "));
+    console.info("[upsell] one-time offer:", picks.first ? row(picks.first) : "none fits", "| last offer:", picks.last ? row(picks.last) : "none");
+    console.table(picks.ranked.slice(0, 10).map(row));
+  }, [picks, catalogReady, cart]);
+  const hasOffers = showsUpsells(mode) && offers.length > 0;
   const processing = stage === "processing";
+  // Shopify's processing page: the frame with its logo faded, then a grey
+  // skeleton of the checkout, then the page clears for the post-purchase one
+  const [phase, setPhase] = useState<"blank" | "skeleton" | "clear">("blank");
+  const designIn = design !== undefined;
+  useEffect(() => {
+    // the phases are the store's frame: they start once its design is in
+    if (!processing || !designIn) return;
+    const a = window.setTimeout(() => setPhase("skeleton"), PROCESSING_MS.blank);
+    const b = window.setTimeout(() => setPhase("clear"), PROCESSING_MS.blank + PROCESSING_MS.skeleton);
+    return () => { window.clearTimeout(a); window.clearTimeout(b); };
+  }, [processing, designIn]);
   useEffect(() => {
     // the offers are picked from the catalog: hold the frame until it's in
-    if (!processing || !catalogReady) return;
-    const t = window.setTimeout(() => setStage(hasOffers ? "upsell" : "thankyou"), PROCESSING_MS);
+    if (!processing || phase !== "clear" || !catalogReady) return;
+    const t = window.setTimeout(() => setStage(hasOffers ? "upsell" : "thankyou"), PROCESSING_MS.clear);
     return () => window.clearTimeout(t);
-  }, [processing, catalogReady, hasOffers]);
+  }, [processing, phase, catalogReady, hasOffers]);
 
   if (!loaded) {
     return (
@@ -80,8 +106,6 @@ export function CheckoutFlow() {
   const styled: Brand = { ...brand, checkout: design ?? null };
   const accent = design?.button || brand.accent || "#111827";
   const shipping = shippingFee(cart.reduce((s, l) => s + l.price * l.qty, 0));
-  const bought = new Set(cart.map((l) => l.title.toLowerCase()));
-  const offers = catalog.filter((p) => !bought.has(p.title.toLowerCase())).slice(0, 7);
 
   let page: React.ReactNode;
   if (!cart.length) {
@@ -102,11 +126,18 @@ export function CheckoutFlow() {
     // the order going through: the checkout's frame, empty, as Shopify shows it
     page = design === undefined ? (
       <div className="min-h-screen bg-white" />
+    ) : phase === "clear" ? (
+      <div className="min-h-screen" style={{ background: "var(--co-main-bg)" }} aria-busy="true" aria-label="Processing your order" />
     ) : (
-      <>
-        <StoreHeader brand={styled} />
-        <SplitLayout main={<div className="min-h-[60vh]" aria-busy="true" aria-label="Processing your order" />} side={null} />
-      </>
+      <div aria-busy="true" aria-label="Processing your order">
+        <div className={phase === "blank" ? "opacity-[0.08]" : "transition-opacity duration-200"}>
+          <StoreHeader brand={styled} />
+        </div>
+        <SplitLayout
+          main={phase === "skeleton" ? <ProcessingSkeleton /> : <div className="min-h-[60vh]" />}
+          side={phase === "skeleton" ? <ProcessingSummarySkeleton /> : null}
+        />
+      </div>
     );
   } else if (stage === "upsell" && offers.length) {
     page = (
@@ -129,6 +160,8 @@ export function CheckoutFlow() {
         accent={accent}
         currency={currency}
         shipping={shipping}
+        editing={showsEditing(mode)}
+        upsells={showsUpsells(mode)}
       />
     );
   } else {
@@ -335,6 +368,47 @@ function FormSkeleton() {
         </div>
       ))}
       <div className="h-[60px] rounded-xl bg-neutral-200" />
+    </div>
+  );
+}
+
+/** The grey outline Shopify draws on its processing page, in the page's own colours. */
+function ProcessingSkeleton() {
+  const bar = "rounded-full bg-black/[0.08]";
+  return (
+    <div className="animate-pulse">
+      <div className={`mx-auto h-2.5 w-24 ${bar}`} />
+      <div className="mt-4 grid grid-cols-3 gap-1.5">
+        {[0, 1, 2].map((i) => <div key={i} className="h-[31px] rounded-lg bg-black/[0.08]" />)}
+      </div>
+      {[0, 1].map((s) => (
+        <div key={s} className="mt-6 border-t border-black/10 pt-8">
+          <div className={`h-3 w-14 ${bar}`} />
+          <div className={`mt-5 h-2 ${bar}`} />
+          <div className={`mt-2 h-2 ${bar}`} />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function ProcessingSummarySkeleton() {
+  const bar = "rounded-full bg-black/[0.08]";
+  return (
+    <div className="animate-pulse">
+      <div className="flex items-start gap-3">
+        <div className="size-10 rounded-lg bg-black/[0.08]" />
+        <div className="space-y-1.5 pt-1">
+          <div className={`h-2 w-[100px] ${bar}`} />
+          <div className={`h-2 w-10 ${bar}`} />
+        </div>
+      </div>
+      <div className="mt-5 space-y-2.5">
+        <div className={`h-2 w-10 ${bar}`} />
+        <div className={`h-2 w-10 ${bar}`} />
+        <div className={`h-2 w-10 ${bar}`} />
+        <div className={`h-3 w-[60px] ${bar}`} />
+      </div>
     </div>
   );
 }

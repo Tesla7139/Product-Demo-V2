@@ -33,6 +33,13 @@ export type CatalogProduct = {
   options: { name: string; values: string[] }[];
   variants: { id: string; title: string; options: string[]; price: number; image: string | null }[];
   price: number;
+  /** for the upsell engine (src/lib/upsell/engine.ts) */
+  hasImage: boolean;
+  available?: boolean;
+  handle?: string;
+  type?: string;
+  tags?: string[];
+  vendor?: string;
 };
 
 export function readSession<T>(key: string): T | null {
@@ -76,10 +83,14 @@ export const orderNumber = () =>
 type ShopifyProduct = {
   id: number;
   title: string;
+  handle?: string;
+  product_type?: string;
+  vendor?: string;
+  tags?: string[] | string;
   body_html?: string;
   images?: { src: string; variant_ids?: number[] }[];
   options?: { name: string; values: string[] }[];
-  variants?: { id: number; title: string; price: string; option1?: string | null; option2?: string | null; option3?: string | null; featured_image?: { src: string } | null }[];
+  variants?: { id: number; title: string; price: string; available?: boolean; option1?: string | null; option2?: string | null; option3?: string | null; featured_image?: { src: string } | null }[];
 };
 
 const stripHtml = (html = "") =>
@@ -102,17 +113,23 @@ function fromShopify(p: ShopifyProduct): CatalogProduct {
     options,
     variants,
     price: variants[0]?.price ?? 0,
+    hasImage: !!p.images?.length,
+    available: (p.variants ?? []).some((v) => v.available !== false),
+    handle: p.handle,
+    type: p.product_type || undefined,
+    tags: Array.isArray(p.tags) ? p.tags : (p.tags ?? "").split(",").map((t) => t.trim()).filter(Boolean),
+    vendor: p.vendor,
   };
 }
 
 function fromSimple(p: { id: string; title: string; price: number; image?: string | null }): CatalogProduct {
-  return { id: p.id, title: p.title, description: "", images: p.image ? [p.image] : [], options: [], variants: [], price: p.price };
+  return { id: p.id, title: p.title, description: "", images: p.image ? [p.image] : [], options: [], variants: [], price: p.price, hasImage: !!p.image };
 }
 
 /** The store's catalog — products.json through the copy's proxy (carries the password cookie). */
 export async function loadCatalog(host: string): Promise<CatalogProduct[]> {
   try {
-    const res = await fetch(`/clone/${host}/products.json?limit=30`, { headers: { Accept: "application/json" } });
+    const res = await fetch(`/clone/${host}/products.json?limit=100`, { headers: { Accept: "application/json" } });
     const data = (await res.json()) as { products?: ShopifyProduct[] };
     const products = (data.products ?? []).map(fromShopify).filter((p) => p.price > 0);
     if (products.length) return products;

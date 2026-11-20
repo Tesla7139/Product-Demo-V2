@@ -3,6 +3,7 @@ import { getUpstream, isBlockedHost } from "@/lib/clone/upstream";
 import { englishAlternate } from "@/lib/clone/locale";
 import { cachedUpstream, cacheKey, DATA_TTL, PAGE_TTL } from "@/lib/clone/cache";
 import { checkoutSnapshot } from "@/lib/clone/checkoutSnapshot";
+import { pickHero } from "@/lib/upsell/engine";
 
 export const runtime = "nodejs";
 export const maxDuration = 30;
@@ -18,7 +19,8 @@ type ShopifyProduct = {
   handle: string;
   title?: string;
   product_type?: string;
-  tags?: string[];
+  tags?: string[] | string;
+  vendor?: string;
   images?: { src?: string }[];
   variants?: { id?: number; title?: string; available?: boolean; price?: string }[];
 };
@@ -28,8 +30,10 @@ type ShopifyProduct = {
 const NOT_A_SIMPLE_PRODUCT =
   /\b(bundles?|sets?|kits?|builder|outlet|samples?|gift ?cards?|e-?gift|subscriptions?|memberships?|club|members? only|exclusive|mystery|free gift|warranty|insurance|shipping protection)\b/i;
 
+const tagsOf = (p: ShopifyProduct) => (Array.isArray(p.tags) ? p.tags : (p.tags ?? "").split(",").map((t) => t.trim()).filter(Boolean));
+
 const isSimple = (p: ShopifyProduct) =>
-  ![p.handle, p.title, p.product_type, ...(p.tags ?? [])].some((s) => s && NOT_A_SIMPLE_PRODUCT.test(s.replace(/[-_]/g, " ")));
+  ![p.handle, p.title, p.product_type, ...tagsOf(p)].some((s) => s && NOT_A_SIMPLE_PRODUCT.test(s.replace(/[-_]/g, " ")));
 
 const isBuyable = (p: ShopifyProduct) =>
   !!p.images?.length && !!p.variants?.some((v) => v.available !== false && Number(v.price) > 0);
@@ -42,17 +46,34 @@ const starts = new Map<string, { at: number; data: Promise<Start> }>();
 const TTL = 10 * 60 * 1000;
 
 /**
- * A product to open on, as a path: the first simple one that's in stock with a
- * photo, else any in stock with a photo, else the first. Null without a readable
- * Shopify catalog.
+ * A product to open on, as a path: the upsell engine's pick (src/lib/upsell/engine.ts)
+ * — a simple, in-stock product with a photo, priced mid-catalog, with room for
+ * upsells under it — else the first simple one in stock, else the first. Null
+ * without a readable Shopify catalog.
  */
 async function productPick(site: string): Promise<{ path: string; line: StartLine } | null> {
   const up = await catalog(site);
   if (!up || up.status >= 400) return null;
   try {
     const { products } = JSON.parse(up.body.toString("utf8")) as { products?: ShopifyProduct[] };
+    const all = products ?? [];
+    const firstPrice = (p: ShopifyProduct) => Number(p.variants?.find((v) => v.available !== false && Number(v.price) > 0)?.price) || 0;
+    const hero = pickHero(
+      all.map((p, i) => ({
+        id: String(i),
+        title: p.title ?? p.handle,
+        handle: p.handle,
+        price: firstPrice(p),
+        hasImage: !!p.images?.length,
+        available: isBuyable(p),
+        type: p.product_type,
+        tags: tagsOf(p),
+        vendor: p.vendor,
+      }))
+    );
     const pick =
-      products?.find((p) => isBuyable(p) && isSimple(p)) ?? products?.find(isBuyable) ?? products?.[0];
+      (hero && isBuyable(all[+hero.id]) && isSimple(all[+hero.id]) ? all[+hero.id] : null) ??
+      all.find((p) => isBuyable(p) && isSimple(p)) ?? all.find(isBuyable) ?? all[0];
     if (!pick) return null;
     const v = pick.variants?.find((x) => x.available !== false && Number(x.price) > 0) ?? pick.variants?.[0];
     return {
@@ -71,7 +92,7 @@ async function productPick(site: string): Promise<{ path: string; line: StartLin
   }
 }
 
-const catalogUrl = (site: string) => `https://${site}/products.json?limit=30`;
+const catalogUrl = (site: string) => `https://${site}/products.json?limit=100`;
 const catalog = (site: string) =>
   cachedUpstream(cacheKey("data", catalogUrl(site)), DATA_TTL, () =>
     getUpstream(catalogUrl(site), { accept: "application/json", page: false })

@@ -1,11 +1,12 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { rankUpsells } from "@/lib/upsell/engine";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ChevronDown, CreditCard, Loader2, MapPin, Pencil, Plus, Trash2, UserRound, X } from "lucide-react";
 import { DemoImg } from "@/components/sections/demo/DemoImg";
 import { DEFAULT_ADDR, DEFAULT_EMAIL } from "@/components/sections/demo/DemoMock";
 import {
-  AnimatedCheck, Checkbox, Field, MobileSummary, money, OrderSummary, SplitLayout, StoreHeader, textOn, Toast, useToast,
+  AnimatedCheck, Checkbox, Field, MobileSummary, money, OrderSummary, readSession, SplitLayout, StoreHeader, textOn, Toast, useToast,
   type Brand, type CatalogProduct, type Line,
 } from "./shared";
 
@@ -18,12 +19,11 @@ type AddOptions = { off?: number; variant?: number; qty?: number };
 type Addr = typeof DEFAULT_ADDR & { line2: string; country: string };
 const EDIT_WINDOW = 60 * 60;
 const SUGGEST_OFF = 25;
-
 /** Sections rise in one after another, after the check has drawn. */
 const rise = (i: number): React.CSSProperties => ({ animationDelay: `${300 + i * 110}ms` });
 
 export function ThankYouPage({
-  brand, initialLines, catalog, orderNo, accent, currency, shipping,
+  brand, initialLines, catalog, orderNo, accent, currency, shipping, editing = true, upsells = true,
 }: {
   brand: Brand;
   /** what was paid for: the cart plus any accepted post-purchase offers */
@@ -33,6 +33,10 @@ export function ThankYouPage({
   accent: string;
   currency: string;
   shipping: number;
+  /** the order-editing window (the demo's "Order editing" option) */
+  editing?: boolean;
+  /** "You may also like" (the demo's "Upsells" option) */
+  upsells?: boolean;
 }) {
   const fmt = (n: number) => money(n, currency);
   const [lines, setLines] = useState<Line[]>(initialLines);
@@ -49,21 +53,76 @@ export function ThankYouPage({
     return () => clearInterval(id);
   }, []);
 
-  const [email, setEmail] = useState(DEFAULT_EMAIL);
+  const [email, setEmail] = useState(() => readSession<{ email?: string }>("cp-persona")?.email || DEFAULT_EMAIL);
   const [phone, setPhone] = useState("");
-  const [addr, setAddr] = useState({ ...DEFAULT_ADDR, line2: "", country: "United States" });
+  // the story tour's shopper, when one is playing (StoryTour.tsx)
+  const [persona] = useState(() => readSession<{ first: string; last: string; email?: string }>("cp-persona"));
+  const [addr, setAddr] = useState({ ...DEFAULT_ADDR, ...(persona ? { first: persona.first, last: persona.last } : {}), line2: "", country: "United States" });
   const [verified, setVerified] = useState(false);
   const [confirming, setConfirming] = useState(false);
   const [exploring, setExploring] = useState(false);
   const [newsOptIn, setNewsOptIn] = useState(false);
+
+  // The viewer's story tour (StoryTour.tsx) drives this page from the parent
+  // frame: where the editing window is, and the address fix played out.
+  const editRef = useRef<HTMLDivElement>(null);
+  const shipRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (window.parent === window) return;
+    const origin = window.location.origin;
+    const post = (data: object) => window.parent.postMessage({ type: "cp:story-event", ...data }, origin);
+    const timers: number[] = [];
+    const wait = (ms: number) => new Promise<void>((r) => { timers.push(window.setTimeout(r, ms)); });
+    const rectOf = (el: HTMLElement | null) => {
+      if (!el) return null;
+      let r = el.getBoundingClientRect();
+      if (r.top < 60 || r.bottom > window.innerHeight - 140) {
+        el.scrollIntoView({ block: "center", behavior: "instant" });
+        r = el.getBoundingClientRect();
+      }
+      return { top: r.top, left: r.left, width: r.width, height: r.height };
+    };
+    const fixAddress = async () => {
+      setOpen("shipping");
+      await wait(450);
+      shipRef.current?.scrollIntoView({ block: "center", behavior: "smooth" });
+      await wait(700);
+      // the shopper types the new address in
+      const next = { line1: "1208 Bayview Avenue", city: "San Diego", state: "California", zip: "92101" };
+      setVerified(false);
+      for (let i = 0; i <= next.line1.length; i += 1) {
+        setAddr((a) => ({ ...a, line1: next.line1.slice(0, i) }));
+        await wait(55);
+      }
+      await wait(250);
+      setAddr((a) => ({ ...a, city: next.city, state: next.state, zip: next.zip }));
+      await wait(700);
+      setConfirming(true);
+      await wait(1700);
+      setConfirming(false);
+      setVerified(true);
+      setOpen(null);
+      setToast("Shipping address updated");
+    };
+    const onMsg = (e: MessageEvent) => {
+      if (e.origin !== origin || e.data?.type !== "cp:story") return;
+      const { id } = e.data;
+      if (e.data.do === "rect") post({ id, rect: rectOf(e.data.what === "address" ? shipRef.current : editRef.current) });
+      if (e.data.do === "fix-address") fixAddress().then(() => post({ id, ok: true }));
+    };
+    window.addEventListener("message", onMsg);
+    post({ ev: "thankyou-ready", editing });
+    return () => { window.removeEventListener("message", onMsg); timers.forEach(window.clearTimeout); };
+  }, [editing, setToast]);
+
 
   const subtotal = lines.reduce((s, l) => s + l.price * l.qty, 0);
   const total = cancelled ? 0 : subtotal + shipping;
   const balance = cancelled ? 0 : Math.max(0, Math.round((total - paid) * 100) / 100);
 
   const suggestions = useMemo(() => {
-    const inOrder = new Set(lines.map((l) => l.title.toLowerCase()));
-    return catalog.filter((p) => !inOrder.has(p.title.toLowerCase())).slice(0, 8);
+    // what goes with the order, by the upsell engine's rules (src/lib/upsell/engine.ts)
+    return rankUpsells(lines, catalog, true).slice(0, 8).map((r) => r.product);
   }, [catalog, lines]);
 
   const toggle = (s: Section) => {
@@ -121,8 +180,8 @@ export function ThankYouPage({
           <h2 className="cp-heading text-xl">Order cancelled</h2>
           <p className="mt-1.5 text-[15px] text-neutral-600">A refund of {fmt(paid)} has been issued to your original payment method.</p>
         </div>
-      ) : (
-        <div className="cp-rise mt-8 rounded-2xl border border-neutral-200 p-4 sm:p-5" style={rise(1)}>
+      ) : !editing ? null : (
+        <div ref={editRef} className="cp-rise mt-8 rounded-2xl border border-neutral-200 p-4 sm:p-5" style={rise(1)}>
           <p className="text-[16px] font-bold">
             You can make changes to your order for another{" "}
             <span className="text-[#e01b1b]">{mins} mins and {String(secs % 60).padStart(2, "0")} secs</span>
@@ -154,6 +213,7 @@ export function ThankYouPage({
               <SolidButton accent={accent} onClick={() => { setOpen(null); setToast("Contact information updated"); }}>Change Contact Information</SolidButton>
             </Accordion>
 
+            <div ref={shipRef}>
             <Accordion
               icon={MapPin}
               label="Edit Shipping Address"
@@ -192,6 +252,7 @@ export function ThankYouPage({
               </div>
               <SolidButton accent={accent} onClick={() => setConfirming(true)}>Update Shipping Address</SolidButton>
             </Accordion>
+            </div>
 
             <Accordion icon={Pencil} label="Update your order" open={open === "order"} onToggle={() => toggle("order")}>
               <ul className="divide-y divide-neutral-200">
@@ -251,8 +312,8 @@ export function ThankYouPage({
         </div>
       )}
 
-      {!cancelled && suggestions.length > 0 && (
-        <div className="cp-rise mt-6 rounded-2xl border border-neutral-200 p-4 sm:p-5" style={rise(2)}>
+      {upsells && !cancelled && suggestions.length > 0 && (
+        <div className={`cp-rise ${editing ? "mt-6" : "mt-8"} rounded-2xl border border-neutral-200 p-4 sm:p-5`} style={rise(2)}>
           <h2 className="cp-heading text-[22px]">You may also like these products</h2>
           <div className="-mx-1 mt-4 flex snap-x gap-4 overflow-x-auto px-1 pb-2">
             {suggestions.map((p) => (

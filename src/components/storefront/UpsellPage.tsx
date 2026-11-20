@@ -15,15 +15,19 @@ const PCT = 20;
 const OFFER_SECONDS = 5 * 60;
 const SWITCH_MS = 900; // the spinner between pages
 const PAY_MS = 1300;
+const FIRST_BEAT_MS = 500; // the confirmation strip alone, before anything loads
+const FIRST_LOAD_MS = 1600; // the first offer page's spinner
 
 type OfferPage = { kind: "first" | "last"; featured: CatalogProduct | null; grid: CatalogProduct[] };
 
+// offers come picked and ordered by the upsell engine (src/lib/upsell/engine.ts):
+// the one-time offer, then the last offer (a downsell)
 function buildPages(offers: CatalogProduct[]): OfferPage[] {
   if (!offers.length) return [];
-  const [featured, ...rest] = offers;
-  const pages: OfferPage[] = [{ kind: "first", featured, grid: rest.slice(0, 4) }];
-  const last = rest.slice(4, 6).length >= 2 ? rest.slice(4, 6) : rest.slice(0, 2);
-  if (last.length) pages.push({ kind: "last", featured: null, grid: last });
+  // one product per page, as Shopify's post-purchase page shows it
+  const [featured, last] = offers;
+  const pages: OfferPage[] = [{ kind: "first", featured, grid: [] }];
+  if (last) pages.push({ kind: "last", featured: last, grid: [] });
   return pages;
 }
 
@@ -41,13 +45,20 @@ export function UpsellPage({
   const pages = useMemo(() => buildPages(offers), [offers]);
   const [idx, setIdx] = useState(0);
   const [busy, setBusy] = useState(true); // the page "loads" first, as the real one does
+  // on arrival the strip stands alone for a beat before the offers' spinner shows
+  const [arrived, setArrived] = useState(false);
   const accepted = useRef<Line[]>([]);
 
   useEffect(() => {
-    if (!busy) return;
-    const t = window.setTimeout(() => setBusy(false), SWITCH_MS);
+    const t = window.setTimeout(() => setArrived(true), FIRST_BEAT_MS);
     return () => window.clearTimeout(t);
-  }, [busy]);
+  }, []);
+
+  useEffect(() => {
+    if (!busy || !arrived) return;
+    const t = window.setTimeout(() => setBusy(false), idx === 0 ? FIRST_LOAD_MS : SWITCH_MS);
+    return () => window.clearTimeout(t);
+  }, [busy, arrived, idx]);
 
   const next = (added?: Line) => {
     if (added) accepted.current = [...accepted.current, added];
@@ -82,7 +93,7 @@ export function UpsellPage({
       <div className="mx-auto max-w-[950px] px-5 pb-16 pt-6">
         {busy || !page ? (
           <div className="flex justify-center border-b border-black/10 py-8">
-            <Spinner size={34} />
+            {arrived ? <Spinner size={34} /> : <span className="h-[34px]" />}
           </div>
         ) : (
           <OfferPageView key={idx} page={page} currency={currency} onAccept={(l) => next(l)} onDecline={() => next()} />
@@ -121,12 +132,12 @@ function OfferPageView({
         {page.kind === "first" ? (
           <>
             <div className="cp-bold text-[17px]">One-time offer!</div>
-            <div className="mt-1 text-[17px]">Get any of these recommended items now at <b className="cp-bold">&nbsp;{PCT}% OFF!</b></div>
+            <div className="mt-1 text-[17px]">Get this recommended item now at <b className="cp-bold">&nbsp;{PCT}% OFF!</b></div>
           </>
         ) : (
           <>
             <div className="cp-bold text-[22px]">Last offer:</div>
-            <div className="mt-1 text-[17px]">Get any of these items at <b className="cp-bold">{PCT}% OFF!</b></div>
+            <div className="mt-1 text-[17px]">Get this item at <b className="cp-bold">{PCT}% OFF!</b></div>
           </>
         )}
       </div>
@@ -143,7 +154,8 @@ function OfferPageView({
         </div>
       )}
 
-      <DeclineButton disabled={!!paying} onDecline={onDecline} className="mt-4 w-full" />
+      {/* the featured product has its own Decline; a second one only goes under a grid */}
+      {page.grid.length > 0 && <DeclineButton disabled={!!paying} onDecline={onDecline} className="mt-4 w-full" />}
     </div>
   );
 }
